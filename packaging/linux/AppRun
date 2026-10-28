@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "${1:-}" = --install ]; then
+    shift
+    exec sh "$appdir/usr/share/terminal-plus/install-appimage.sh" "$appdir" "$@"
+fi
+export TERMINAL_PLUS_CURL=$appdir/usr/bin/curl
+export TERMINAL_PLUS_OPENSSL=$appdir/usr/bin/openssl
+export LIBDECOR_PLUGIN_DIR=$appdir/usr/lib/terminal-plus/libdecor/plugins-1
+export XLOCALEDIR=$appdir/usr/share/X11/locale
+export XKB_CONFIG_ROOT=$appdir/usr/share/X11/xkb
+# RUNPATHs keep bundled libraries private to the app; host commands and GPU
+# drivers retain their system libraries.
+exec "$appdir/usr/bin/terminal+" "$@"

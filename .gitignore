@@ -1,0 +1,9 @@
+/build/
+/shaders/*.spv
+/.update-signing/
+__pycache__/
+
+# Local development credentials and agent state
+/.aws/
+/.agents/
+/.codex/

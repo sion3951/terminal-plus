@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal+
+Comment=GPU terminal, SSH, files and documents
+Exec=terminal+
+Icon=terminal-plus
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=terminal-plus
