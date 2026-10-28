@@ -20,7 +20,9 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
       - name: Install native build dependencies and GLFW 3.4
-        run: sudo sh scripts/ci/setup-linux.sh
+        run: |
+          sudo sh scripts/ci/setup-linux.sh
+          sudo chown -R "$(id -u):$(id -g)" build
       - name: Install pinned Odin compiler
         run: sh scripts/ci/setup-odin.sh
       - name: Validate tag
