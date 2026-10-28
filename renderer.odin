@@ -295,6 +295,32 @@ renderer_vulkan_device :: proc(r:^Renderer) {
 }
 
 renderer_glfw_count:int
+renderer_vulkan_shared_instance:vk.Instance
+renderer_vulkan_instance_count:int
+
+// NVIDIA's Wayland dispatch has process-wide state tied to VkInstance teardown.
+// Keep one instance alive for the whole workspace; devices, surfaces and GPU
+// resources remain owned by their individual renderers.
+renderer_instance_acquire :: proc(r:^Renderer,info:^vk.InstanceCreateInfo)->bool {
+    if renderer_vulkan_shared_instance==nil {
+        instance:vk.Instance
+        if !renderer_ok(r.dispatch.CreateInstance(info,nil,&instance),"instance") {return false}
+        renderer_vulkan_shared_instance=instance
+    }
+    r.instance=renderer_vulkan_shared_instance
+    renderer_vulkan_instance_count+=1
+    renderer_vulkan_instance(r)
+    return true
+}
+renderer_instance_release :: proc(r:^Renderer) {
+    if r.instance==nil {return}
+    renderer_vulkan_instance_count-=1
+    if renderer_vulkan_instance_count==0 {
+        r.dispatch.DestroyInstance(renderer_vulkan_shared_instance,nil)
+        renderer_vulkan_shared_instance=nil
+    }
+    r.instance=nil
+}
 
 renderer_ok :: proc(result: vk.Result, action: string) -> bool {
     if result != .SUCCESS { fmt.eprintf("Vulkan %s: %v\n", action, result); return false }
@@ -787,8 +813,7 @@ renderer_init :: proc(r: ^Renderer, width,height: int, title: cstring) -> bool {
     app := vk.ApplicationInfo{sType=.APPLICATION_INFO,pApplicationName="terminal-plus",apiVersion=api_version}
     instance := vk.InstanceCreateInfo{sType=.INSTANCE_CREATE_INFO,pApplicationInfo=&app,enabledExtensionCount=u32(len(extensions)),ppEnabledExtensionNames=raw_data(extensions)}
     if portability {instance.flags={.ENUMERATE_PORTABILITY_KHR}}
-    if !renderer_ok(r.dispatch.CreateInstance(&instance,nil,&r.instance), "instance") { renderer_destroy(r); return false }
-    renderer_vulkan_instance(r)
+    if !renderer_instance_acquire(r,&instance) { renderer_destroy(r); return false }
     if !renderer_ok(glfw.CreateWindowSurface(r.instance,r.window,nil,&r.surface), "window surface") { renderer_destroy(r); return false }
     stage=startup_stage(stage,"Vulkan instance / surface")
     count: u32
@@ -983,12 +1008,12 @@ renderer_destroy :: proc(r: ^Renderer) {
         r.dispatch.DestroyDevice(r.device,nil)
     }
     if r.surface != 0 { r.dispatch.DestroySurfaceKHR(r.instance,r.surface,nil) }
-    if r.instance != nil { r.dispatch.DestroyInstance(r.instance,nil) }
+    renderer_instance_release(r)
     if r.window != nil { glfw.DestroyWindow(r.window) }
     if r.device_name != "" { delete(r.device_name) }
     if r.lifecycle_counted {
         renderer_glfw_count-=1
-        if renderer_glfw_count==0 {glfw.Terminate()}
+        if renderer_glfw_count==0 {tab_drag_wayland_destroy();glfw.Terminate()}
     }
     r^={}
 }

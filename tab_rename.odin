@@ -108,7 +108,7 @@ tab_rename_mouse :: proc(a:^App,button,action:c.int,x,y:f32)->bool {
     index:=tab_bar_hit(bar,x)
     if button==glfw.MOUSE_BUTTON_LEFT&&y>=9&&y<39&&index>=0&&((a.tab_rename.group_id!=0&&tab_root_group(a.tabs[index])==a.tab_rename.group_id)||(a.tabs[index]==a.tab_rename.tab&&tab_root_group(a.tabs[index])==0)) {
         left:=bar.start+f32(tab_bar_slot(a,bar,a.tabs[index])-bar.first)*bar.tab_width
-        if x>=left+20&&x<left+bar.tab_width-29 {return true}
+        if x>=left+7&&x<left+bar.tab_width-29 {return true}
     }
     tab_rename_finish(a,true)
     return false
@@ -121,14 +121,14 @@ tab_rename_render_box :: proc(a:^App,tab:^Tab,x,y,width,height:f32,group_id:u64)
     e:=&a.tab_rename
     if e.group_id!=group_id||e.tab==nil {return false}
     if group_id==0&&e.tab!=tab {return false}
-    available:=max(1,width-57)
+    available:=max(1,width-44)
     top:=y+max(1,(height-30)/2)
-    ui_rect(a,x+20,top,width-49,30,ACCENT)
-    ui_rect(a,x+21,top+1,width-51,28,BG)
+    ui_rect(a,x+7,top,width-36,30,ACCENT)
+    ui_rect(a,x+8,top+1,width-38,28,BG)
     start:=explorer_input_start(a,e.input[:e.used],e.cursor,14,available)
-    text_edit_selection_render(a,e.input[:e.used],start,e.cursor,e.anchor,e.selecting,e.select_all,x+25,top+3,14,available,24)
-    ui_fit_text(a,string(e.input[start:e.used]),x+25,top+7,14,available,TEXT)
+    text_edit_selection_render(a,e.input[:e.used],start,e.cursor,e.anchor,e.selecting,e.select_all,x+12,top+3,14,available,24)
+    ui_fit_text(a,string(e.input[start:e.used]),x+12,top+7,14,available,TEXT)
     caret:=renderer_text_width(&a.renderer,string(e.input[start:e.cursor]),14*a.scale)/a.scale
-    ui_rect(a,x+25+min(caret,available),top+4,1,22,TEXT)
+    ui_rect(a,x+12+min(caret,available),top+4,1,22,TEXT)
     return true
 }

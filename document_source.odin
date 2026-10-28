@@ -88,7 +88,7 @@ document_markdown_output :: proc "c" (bytes:[^]u8,size:c.uint,user:rawptr) {
 document_append :: proc(output:^[dynamic]u8,parts:..string) {for part in parts {append(output,part)}}
 DOCUMENT_MARKDOWN_STYLE :: `
 @font-face{font-family:Inter;src:url('/.minor-document/font/Inter-Regular.ttf') format('truetype');font-style:normal;font-weight:400;font-display:swap}
-:root{color-scheme:dark;--bg:#000;--fg:#ededed;--muted:#bdbdbd;--line:#212121;--accent:#ededed}
+:root{color-scheme:dark;--bg:#0a0a0a;--fg:#9b9b9b;--muted:#bdbdbd;--line:#212121;--accent:#9b9b9b}
 *{box-sizing:border-box}html{background:var(--bg);color:var(--fg);font:16px/1.65 Inter,system-ui,sans-serif;scroll-behavior:auto}
 body{margin:0}main{max-width:920px;margin:0 auto;padding:28px 36px 72px;overflow-wrap:anywhere}
 h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.6em 0 .65em;font-weight:650;scroll-margin-top:24px}h1{font-size:2.1em}h2{font-size:1.65em}h3{font-size:1.3em}h1,h2{padding-bottom:.28em;border-bottom:1px solid var(--line)}

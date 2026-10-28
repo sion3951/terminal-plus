@@ -98,6 +98,7 @@ workspace_create_window :: proc(width,height:int,copy_from:^App=nil)->^App {
     app_metrics(a)
     a.profiles=device_profiles_load()
     append(&workspace_windows,a)
+    tab_drag_wayland_init()
     if workspace_focused==nil {workspace_focused=a}
     a.session_loading=false
     return a

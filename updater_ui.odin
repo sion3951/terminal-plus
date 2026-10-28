@@ -8,6 +8,10 @@ import "core:time"
 import glfw "vendor:glfw"
 
 Updater_Box :: struct {x,y,w,h:f32}
+UPDATER_HEADER_SPACE :: 44
+updater_header_box :: proc(a:^App)->Updater_Box {
+    return {f32(a.renderer.width)/a.scale-UPDATER_HEADER_SPACE,8,32,32}
+}
 updater_box :: proc(a:^App)->Updater_Box {
     width,height:=f32(a.renderer.width)/a.scale,f32(a.renderer.height)/a.scale
     w,h:=min(560,width-16),min(310,height-16)
@@ -27,7 +31,13 @@ updater_draw :: proc(a:^App) {
     color:=MUTED
     if u.state==.Ready {color=GREEN}
     if u.state==.Checking||u.state==.Downloading {color=SOFT}
-    ui_text(a,"Updates",width-75,18,12,color)
+    icon:=updater_header_box(a)
+    mx,my:=glfw.GetCursorPos(a.renderer.window)
+    if updater_contains(f32(mx),f32(my),icon.x,icon.y,icon.w,icon.h) {
+        ui_rect(a,icon.x,icon.y,icon.w,icon.h,HOVER)
+        if u.state!=.Ready {color=TEXT}
+    }
+    explorer_icon(a,.Reload,icon.x+8,icon.y+8,color)
     if !a.update_dialog {return}
     box:=updater_box(a);x,y,w,h:=box.x,box.y,box.w,box.h
     ui_rect(a,0,0,width,height,Color{0,0,0,0.85})
@@ -57,9 +67,9 @@ updater_draw :: proc(a:^App) {
     updater_button(a,"Update and restart",x+w-180,y+h-42,164,u.state==.Ready)
 }
 updater_mouse :: proc(a:^App,button,action:c.int,x,y:f32)->bool {
-    width:=f32(a.renderer.width)/a.scale
     if !a.update_dialog {
-        if y>=8&&y<40&&x>=width-84&&button==glfw.MOUSE_BUTTON_LEFT&&action==glfw.PRESS {
+        icon:=updater_header_box(a)
+        if update_instance!=nil&&updater_contains(x,y,icon.x,icon.y,icon.w,icon.h)&&button==glfw.MOUSE_BUTTON_LEFT&&action==glfw.PRESS {
             a.update_dialog=true;a.menu.open=false;a.picker.open=false;a.selecting=false;tab_rename_finish(a,true);tab_group_close(a);a.dirty=true
             return true
         }

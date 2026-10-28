@@ -1,6 +1,6 @@
 # Build
 
-Requires Odin, make, glslc, GLFW 3.4+, FreeType, SQLite with FTS5 trigram support,
+Requires Odin, make, glslc, GLFW 3.4+, Wayland client libraries, FreeType, SQLite with FTS5 trigram support,
 MD4C-HTML, Bash, OpenSSH, and Vulkan. Chromium/Chrome enables document previews.
 
 ```sh

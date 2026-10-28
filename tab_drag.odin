@@ -28,7 +28,7 @@ tab_drag_mark :: proc() {
     if tab_drag.source!=nil {tab_drag.source.dirty=true}
     if tab_drag.target!=nil {tab_drag.target.dirty=true}
 }
-tab_drag_cancel :: proc() {tab_drag_mark();tab_drag={}}
+tab_drag_cancel :: proc() {tab_drag_mark();tab_drag_wayland_cancel();tab_drag={}}
 
 tab_drag_index :: proc(a:^App,tab:^Tab)->int {
     if a!=nil {for candidate,i in a.tabs {if candidate==tab {return i}}}
@@ -137,6 +137,7 @@ tab_drag_update_target :: proc(sx,sy:f64,occupied:^App) {
 
 tab_drag_motion :: proc(a:^App,px,py:f64)->bool {
     if !tab_drag.armed {return false}
+    if drag_wayland.active {return true}
     if tab_drag_index(tab_drag.source,tab_drag.tab)<0 {tab_drag_cancel();return false}
     sx,sy:=px,py
     occupied:=tab_drag.source
@@ -149,6 +150,7 @@ tab_drag_motion :: proc(a:^App,px,py:f64)->bool {
     dx,dy:=sx-tab_drag.press_x,sy-tab_drag.press_y
     if !tab_drag.dragging&&dx*dx+dy*dy>=36 {a.last_tab_click=nil;tab_drag.dragging=true;tab_drag_mark()}
     if !tab_drag.dragging {return true}
+    if glfw.GetPlatform()==glfw.PLATFORM_WAYLAND&&tab_drag_wayland_start() {return true}
     moved:=sx!=tab_drag.screen_x||sy!=tab_drag.screen_y
     tab_drag.screen_x=sx;tab_drag.screen_y=sy
     tab_drag_update_target(sx,sy,occupied)
@@ -158,6 +160,7 @@ tab_drag_motion :: proc(a:^App,px,py:f64)->bool {
 
 tab_drag_release :: proc(a:^App,px,py:f64)->bool {
     if !tab_drag.armed {return false}
+    if drag_wayland.active {return true}
     tab_drag_motion(a,px,py)
     if !tab_drag.armed {return true}
     drag:=tab_drag
@@ -183,9 +186,11 @@ tab_drag_release :: proc(a:^App,px,py:f64)->bool {
 tab_drag_poll :: proc() {
     if !tab_drag.armed {return}
     source:=tab_drag.source
-    px,py:=glfw.GetCursorPos(source.renderer.window)
-    if glfw.GetMouseButton(source.renderer.window,glfw.MOUSE_BUTTON_LEFT)==glfw.RELEASE {tab_drag_release(source,px,py);return}
-    tab_drag_motion(source,px,py)
+    if !drag_wayland.active {
+        px,py:=glfw.GetCursorPos(source.renderer.window)
+        if glfw.GetMouseButton(source.renderer.window,glfw.MOUSE_BUTTON_LEFT)==glfw.RELEASE {tab_drag_release(source,px,py);return}
+        tab_drag_motion(source,px,py)
+    }
     if tab_drag.scroll_direction!=0&&tab_drag.target!=nil&&time.tick_diff(tab_drag.scroll_tick,time.tick_now())>=80*time.Millisecond {
         target:=tab_drag.target
         bar:=tab_bar_layout(target)

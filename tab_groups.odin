@@ -270,10 +270,8 @@ tab_group_render :: proc(a:^App) {
             selected:=index==a.active||(group!=0&&tab_group_level(active_tab(a),group)>=0)
             if selected {ui_rect(a,box.x+3,y,box.w-6,GROUP_ROW_HEIGHT,SELECTION)}
             else if hover {ui_rect(a,box.x+3,y,box.w-6,GROUP_ROW_HEIGHT,HOVER)}
-            color:=MUTED;if selected {color=ACCENT}
-            ui_rect(a,box.x+10,y+14,4,4,color)
             title:=tab_title(tab);if group!=0 {title=tab_group_name(tab,group)}
-            if !tab_rename_render_box(a,tab,box.x,y,box.w,GROUP_ROW_HEIGHT,group) {ui_fit_text(a,title,box.x+25,y+10,14,box.w-57,TEXT)}
+            if !tab_rename_render_box(a,tab,box.x,y,box.w,GROUP_ROW_HEIGHT,group) {ui_fit_text(a,title,box.x+12,y+10,14,box.w-44,TEXT)}
             if group!=0 {ui_text(a,"›",box.x+box.w-24,y+8,18,MUTED)} else {ui_text(a,"×",box.x+box.w-23,y+10,14,MUTED)}
         }
         if box.count>box.rows {

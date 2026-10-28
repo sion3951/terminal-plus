@@ -3,8 +3,8 @@ package main
 import "core:fmt"
 import "core:unicode/utf8"
 
-TERMINAL_FG :: u32(0xededed)
-TERMINAL_BG :: u32(0x000000)
+TERMINAL_FG :: u32(0x9b9b9b)
+TERMINAL_BG :: u32(0x0a0a0a)
 TERMINAL_HISTORY_LIMIT :: 10000
 
 Cell :: struct {

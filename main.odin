@@ -12,13 +12,13 @@ import "core:unicode/utf8"
 import glfw "vendor:glfw"
 
 Color :: [4]f32
-// Neutral surfaces and text match the neighboring task_master theme.
-BG :: Color{0,0,0,1}
+// Neutral background and text match T3 Code.
+BG :: Color{10.0/255,10.0/255,10.0/255,1}
 PANEL :: Color{0.040,0.040,0.040,1}
 LINE :: Color{0.13,0.13,0.13,1}
 HOVER :: Color{0.08,0.08,0.08,1}
 SELECTION :: Color{0.22,0.22,0.22,1}
-TEXT :: Color{0.93,0.93,0.93,1}
+TEXT :: Color{155.0/255,155.0/255,155.0/255,1}
 MUTED :: Color{0.49,0.49,0.49,1}
 SOFT :: Color{0.74,0.74,0.74,1}
 ACCENT :: TEXT
@@ -401,7 +401,7 @@ tab_bar_layout :: proc(a:^App)->Tab_Bar_Layout {
     bar:=Tab_Bar_Layout{start=TAB_BAR_START}
     roots:=tab_group_children(a,0)
     bar.count=roots.count;bar.items=roots.items;bar.groups=roots.groups
-    available:=max(1,width-bar.start-12-40-84)
+    available:=max(1,width-bar.start-12-40-UPDATER_HEADER_SPACE)
     bar.visible=max(1,int(available/140))
     bar.overflow=bar.count>bar.visible
     if bar.overflow {
@@ -472,6 +472,10 @@ mouse_callback :: proc "c" (w:glfw.WindowHandle,button,action,mods:c.int) {
     a.anchor=mouse_cell(a,x,y);a.endpoint=a.anchor;a.selected=true;a.selecting=true;a.dirty=true
 }
 app_hover_key :: proc(a:^App,x,y:f32)->u64 {
+    if update_instance!=nil {
+        icon:=updater_header_box(a)
+        if updater_contains(x,y,icon.x,icon.y,icon.w,icon.h) {return u64(10)<<32}
+    }
     if a.menu.open {return tab_menu_hover(a,x,y)}
     if a.picker.open {
         box:=device_picker_layout(a)
@@ -576,25 +580,18 @@ app_render :: proc(a:^App) {
         selected:=i==a.active||(group&&tab_group_level(tab,group_id)>=0)
         if selected {ui_rect(a,x,0,bar.tab_width,HEADER-1,BG);ui_rect(a,x,HEADER-2,bar.tab_width,2,ACCENT)}
         else if i==hovered {ui_rect(a,x,0,bar.tab_width,HEADER-1,HOVER)}
-        dot_color:=GREEN
-        if group||other.files {dot_color=ACCENT}
-        else if other.remote {dot_color=ACCENT;if !other.started||other.exited {dot_color=MUTED}}
+        unread:=other.unread
+        if group {for member in a.tabs {if tab_group_level(member,group_id)>=0&&member.unread {unread=true}}}
+        title_color:=SOFT;if selected||i==hovered||unread {title_color=TEXT}
         if group {
-            ui_rect(a,x+10,18,9,9,dot_color);ui_rect(a,x+12,20,9,9,PANEL);ui_rect(a,x+12,20,9,1,dot_color);ui_rect(a,x+20,20,1,9,dot_color)
-        } else {ui_rect(a,x+12,22,4,4,dot_color)}
-        title_color:=SOFT;if selected||i==hovered {title_color=TEXT}
-        if group {
-            if !tab_rename_render_box(a,other,x,0,bar.tab_width,HEADER,group_id) {ui_fit_text(a,tab_group_name(other,group_id),x+25,16,14,bar.tab_width-65,title_color)}
+            if !tab_rename_render_box(a,other,x,0,bar.tab_width,HEADER,group_id) {ui_fit_text(a,tab_group_name(other,group_id),x+12,16,14,bar.tab_width-52,title_color)}
             ui_text(a,fmt.tprintf("%d",tab_group_count(a,group_id)),x+bar.tab_width-29,17,12,MUTED)
         } else {
-            if !tab_rename_render(a,other,x,bar.tab_width) {ui_fit_text(a,tab_title(other),x+25,16,14,bar.tab_width-57,title_color)}
+            if !tab_rename_render(a,other,x,bar.tab_width) {ui_fit_text(a,tab_title(other),x+12,16,14,bar.tab_width-44,title_color)}
             close_color:=MUTED
             if i==hovered&&f32(mouse_x)>=x+bar.tab_width-30 {close_color=TEXT}
             if selected||i==hovered {ui_text(a,"×",x+bar.tab_width-23,16,14,close_color)}
         }
-        unread:=other.unread
-        if group {for member in a.tabs {if tab_group_level(member,group_id)>=0&&member.unread {unread=true}}}
-        if unread {ui_rect(a,x+13,34,3,3,GREEN)}
         ui_rect(a,x+bar.tab_width-1,12,1,24,LINE)
     }
     if bar.overflow {
@@ -648,8 +645,8 @@ app_render_terminal :: proc(a:^App) {
             px:=a.origin_x+f32(x)*a.cell_w
             fg,bg:=rgb(cell.fg),rgb(cell.bg)
             // Saved scrollback retains the previous theme's default colors.
-            if cell.bg==0x0b0d12 {bg=BG}
-            if cell.fg==0xd7dce5 {fg=TEXT}
+            if cell.bg==0x0b0d12||cell.bg==0x000000 {bg=BG}
+            if cell.fg==0xd7dce5||cell.fg==0xededed {fg=TEXT}
             if cell.inverse {fg,bg=bg,fg}
             if a.selected&&y*a.cols+x>=lo&&y*a.cols+x<=hi {bg=SELECTION}
             if bg!=BG {renderer_rect(&a.vertices,px,py,a.cell_w,a.cell_h,bg)}
