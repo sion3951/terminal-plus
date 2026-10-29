@@ -125,17 +125,14 @@ pty_worker :: proc(t:^thread.Thread) {
 }
 
 pty_start :: proc(p:^PTY,cols,rows:int,command:string="",wake_events:bool=true,directory:string="")->bool {
-    if command=="" {
-        rc:=shell_integration_path()
-        if rc=="" {fmt.eprintln("Cannot prepare the terminal's Bash integration.");return false}
-        return pty_spawn(p,cols,rows,"/bin/bash",[]string{"bash","--rcfile",rc,"-i"},wake_events,directory)
-    }
-    startup:=fmt.tprintf("%s\n%s",SHELL_RESTORE_DIRECTORY,command)
-    return pty_spawn(p,cols,rows,"/bin/bash",[]string{"bash","-lc",startup},wake_events,directory)
+    arguments:=make([dynamic]string,context.temp_allocator)
+    append(&arguments,"terminal+","--native-shell")
+    if command!="" {append(&arguments,"-c",command)}
+    return pty_spawn(p,cols,rows,"/proc/self/exe",arguments[:],wake_events,directory)
 }
 
 // OpenSSH owns authentication, host-key confirmation and configuration. Its
-// terminal is the same real controlling PTY as a local Bash session.
+// terminal is the same real controlling PTY as a local native shell session.
 pty_start_ssh :: proc(p:^PTY,cols,rows:int,target:string,port:u16=0,wake_events:bool=true,control_id:string="",directory:string="")->bool {
     checked,parsed_port,error:=device_target_parse(target)
     if error!=""||parsed_port!=0||checked!=target {return false}
@@ -287,9 +284,10 @@ pty_destroy :: proc(p:^PTY) {
     if foreground>0 && foreground!=p.pid {posix.kill(-foreground,.SIGHUP)}
     posix.kill(-p.pid,.SIGHUP)
     posix.close(p.master);p.master=-1
-    // Bash can run a trap or ignore HUP: use a bounded grace period and reap.
+    // Allow the native shell's bounded job cleanup to finish before killing
+    // its host; otherwise a background group could outlive that cleanup.
     reaped:=false
-    for _ in 0..<20 {
+    for _ in 0..<100 {
         result:=posix.waitpid(p.pid,&p.exit_status,{.NOHANG})
         if result==p.pid || (result<0 && posix.errno()==.ECHILD) {reaped=true;break}
         time.sleep(5*time.Millisecond)
@@ -299,7 +297,7 @@ pty_destroy :: proc(p:^PTY) {
         posix.kill(p.pid,.SIGKILL)
         for posix.waitpid(p.pid,&p.exit_status,{})<0 && posix.errno()==.EINTR {}
     }
-    // The foreground job may have ignored HUP even if Bash already exited.
+    // The foreground job may have ignored HUP even if its shell already exited.
     if foreground>0 && foreground!=p.pid {posix.kill(-foreground,.SIGKILL)}
     posix.close(p.wake[0]);posix.close(p.wake[1])
     delete(p.output);delete(p.input)

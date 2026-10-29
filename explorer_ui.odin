@@ -161,6 +161,7 @@ explorer_update :: proc(a:^App) {
                     }
                 }
             } else {
+                if e.document!=nil&&e.document.source_published {explorer_result_destroy(&result);continue}
                 explorer_result_destroy(&e.preview);e.preview=result
                 clear(&e.lines);e.preview_scroll=0;e.binary=false
                 append(&e.lines,0)
@@ -221,6 +222,7 @@ explorer_open_entry :: proc(a:^App,tab:^Tab,index:int) {
     }
     entry:=pointer^;path:=explorer_entry_path(e,entry)
     if entry.directory {explorer_navigate(a,tab,path)}
+    else if media_kind(path)!=.None {media_view_open(a,tab,path)}
     else if document_kind(path)!=.None {document_open_tab(a,tab,path)}
     else {explorer_open_preview(a,tab,path)}
 }

@@ -111,7 +111,7 @@ Renderer :: struct {
     atlas_height: int,
     atlas: Font_Atlas,
     page: Renderer_Page,
-    page_source: ^Document_Control,
+    page_source: ^Renderer_Pixels,
 }
 Renderer_Vulkan :: struct {
     AcquireNextImageKHR: vk.ProcAcquireNextImageKHR,
@@ -402,8 +402,8 @@ renderer_font_rasterize :: proc(atlas: ^Font_Atlas) -> bool {
         face:^FT_Face
         if FT_New_Memory_Face(atlas.library,raw_data(data),c.long(len(data)),0,&face)!=0 {return false}
         atlas.faces[kind]=face
-        for logical_size,i in FONT_SIZES {
-            index:=int(kind)*len(FONT_SIZES)+i
+        for logical_size,i in RENDER_FONT_SIZES {
+            index:=int(kind)*len(RENDER_FONT_SIZES)+i
             pixels:=f32(max(1,int(math.round(logical_size*atlas.scale))))
             font:=&atlas.fonts[index]
             font.index=index;font.kind=kind;font.pixels=pixels
@@ -411,13 +411,14 @@ renderer_font_rasterize :: proc(atlas: ^Font_Atlas) -> bool {
             font.descent=math.ceil(-pixels*f32(face.descender)/f32(face.units_per_em))
             // Prewarm both regular faces. Styled glyphs are cached on demand
             // so high-DPI atlases retain room for Unicode and fallback fonts.
-            if kind==.UI||kind==.Terminal {
+            font.prewarmed=(kind==.UI||kind==.Terminal)&&i<len(FONT_SIZES)
+            if font.prewarmed {
                 for codepoint in 32..<127 {
                     glyph,ok:=renderer_font_freetype_glyph(atlas,face,index,rune(codepoint))
                     if !ok {return false}
                     font.glyphs[codepoint-32]=glyph
                 }
-            } else {
+            } else if i<len(FONT_SIZES) {
                 // A '?' is always available even when the cache is full.
                 glyph,ok:=renderer_font_freetype_glyph(atlas,face,index,'?')
                 if !ok {return false}
@@ -744,38 +745,21 @@ renderer_swapchain :: proc(r: ^Renderer) -> bool {
     }
     return true
 }
-// Native Wayland is required on Wayland desktops; never route through XWayland.
-renderer_platform:c.int=glfw.ANY_PLATFORM
-
 renderer_init :: proc(r: ^Renderer, width,height: int, title: cstring) -> bool {
     stage:=time.tick_now()
     if renderer_glfw_count==0 {
-        when ODIN_OS==.Linux {
-            platform:=renderer_platform
-            wayland:=os.get_env("WAYLAND_DISPLAY",context.temp_allocator)!=""||os.get_env("XDG_SESSION_TYPE",context.temp_allocator)=="wayland"
-            if wayland&&platform==glfw.PLATFORM_X11 {fmt.eprintln("XWayland is not supported. Launch with native Wayland.");return false}
-            if platform==glfw.ANY_PLATFORM {
-                if wayland {platform=glfw.PLATFORM_WAYLAND}
-                else if os.get_env("DISPLAY",context.temp_allocator)!="" {platform=glfw.PLATFORM_X11}
-            }
-            glfw.InitHint(glfw.PLATFORM,platform)
-        }
-        if !glfw.Init() {fmt.eprintln("Cannot initialize GLFW");return false}
+        glfw.InitHint(glfw.PLATFORM,glfw.PLATFORM_WAYLAND)
+        if !glfw.Init() {fmt.eprintln("Cannot initialize native Wayland. Terminal+ requires a Wayland compositor.");return false}
     }
     renderer_glfw_count+=1;r.lifecycle_counted=true
     stage=startup_stage(stage,"GLFW initialization")
     if !glfw.VulkanSupported() { fmt.eprintln("Vulkan loader or graphics driver unavailable"); renderer_destroy(r); return false }
     stage=startup_stage(stage,"Vulkan loader")
     glfw.WindowHint(glfw.CLIENT_API,glfw.NO_API)
-    when ODIN_OS==.Linux {
-        glfw.WindowHintString(glfw.WAYLAND_APP_ID,"terminal-plus")
-        glfw.WindowHintString(glfw.X11_CLASS_NAME,"terminal-plus")
-        glfw.WindowHintString(glfw.X11_INSTANCE_NAME,"terminal-plus")
-    }
-    when ODIN_OS==.Windows {glfw.WindowHint(glfw.SCALE_TO_MONITOR,true)}
+    glfw.WindowHintString(glfw.WAYLAND_APP_ID,"terminal-plus")
     // Wayland needs an XDG role and its first configure before Vulkan attaches
     // a buffer. A visible Wayland window still maps only at the first present.
-    glfw.WindowHint(glfw.VISIBLE,glfw.GetPlatform() == glfw.PLATFORM_WAYLAND)
+    glfw.WindowHint(glfw.VISIBLE,true)
     r.window=glfw.CreateWindow(i32(width),i32(height),title,nil,nil)
     if r.window == nil { renderer_destroy(r); return false }
     r.width=width; r.height=height
@@ -900,7 +884,7 @@ renderer_acquire_frame :: proc(r:^Renderer)->(index:u32,ready,ok:bool) {
     if acquired != .SUCCESS && acquired != .SUBOPTIMAL_KHR {renderer_ok(acquired,"acquire image");return 0,false,false}
     return index,true,true
 }
-renderer_frame_wait_delay :: proc(r:^Renderer)->f64 {if r.frame_pending {return 0.008};return 60}
+renderer_frame_wait_delay :: proc(r:^Renderer,precise:bool=false)->f64 {if r.frame_pending {return (0.001 if precise else 0.008)};return 60}
 renderer_draw :: proc(r: ^Renderer, vertices: []Vertex,image_index:u32) -> bool {
     index:=image_index
     if r.atlas.dirty {

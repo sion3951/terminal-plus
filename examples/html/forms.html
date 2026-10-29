@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Form examples</title><link rel="stylesheet" href="style.css"></head><body>
+<nav><a href="index.html">All examples</a></nav><h1>Native form controls</h1><p>Use Tab to move between controls. Submitting the first form navigates to a local result page with URL-encoded values.</p>
+<form action="results.html" method="get" class="card"><p><label>Name <input name="name" required placeholder="Your name"></label></p>
+<p><label>Email <input name="email" type="email" value="example@example.test"></label></p>
+<p><label><input name="updates" type="checkbox" value="yes" checked> Receive updates</label></p>
+<p><label>Plan <select name="plan"><option value="basic">Basic</option><option value="plus">Plus</option><option value="pro">Pro</option></select></label></p>
+<p><label>Notes <textarea name="notes">Some text with spaces &amp; symbols.</textarea></label></p><button type="submit" name="action" value="send">Submit GET form</button></form>
+<h2>Scripted submission</h2><form id="local-form" class="card"><input id="message" name="message" value="Hello native HTML"><button>Show message</button></form><p id="form-output">Waiting for submission.</p>
+<script>document.getElementById('local-form').addEventListener('submit',function(event){event.preventDefault();document.getElementById('form-output').textContent=document.getElementById('message').value;});</script>
+</body></html>

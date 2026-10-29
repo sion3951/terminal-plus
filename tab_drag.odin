@@ -3,24 +3,22 @@ package main
 import "core:math"
 import "core:time"
 import glfw "vendor:glfw"
-import x "vendor:x11/xlib"
 
 Tab_Drag :: struct {
-    source, target, occupied: ^App,
+    source, target: ^App,
     tab, onto: ^Tab,
     group_id, to_group, onto_group: u64,
     drop_mode: Tab_Drop_Mode,
     list_scroll: bool,
     list_depth: int,
-    armed, dragging, desktop: bool,
-    press_x, press_y, screen_x, screen_y, grab_x, grab_y: f64,
+    armed, dragging: bool,
+    press_x, press_y, screen_x, screen_y: f64,
     target_x, target_y: f64,
     insertion, scroll_direction: int,
     scroll_tick: time.Tick,
 }
 tab_drag: Tab_Drag
 
-tab_drag_desktop_supported :: proc()->bool {return glfw.GetPlatform()==glfw.PLATFORM_X11}
 tab_drag_active :: proc()->bool {return tab_drag.armed}
 tab_drag_scroll_override :: proc(a:^App)->bool {return tab_drag.dragging&&tab_drag.target==a}
 
@@ -38,49 +36,17 @@ tab_drag_press :: proc(a:^App,tab:^Tab,px,py:f64,group_id:u64=0) {
     tab_drag_cancel()
     index:=tab_drag_index(a,tab)
     if index<0 {return}
-    desktop:=tab_drag_desktop_supported()
-    sx,sy:=px,py
-    if desktop {wx,wy:=glfw.GetWindowPos(a.renderer.window);sx+=f64(wx);sy+=f64(wy)}
-    bar:=tab_bar_layout(a)
-    tab_drag=Tab_Drag{source=a,tab=tab,group_id=group_id,armed=true,desktop=desktop,press_x=sx,press_y=sy,screen_x=sx,screen_y=sy,
-        grab_x=clamp(px-f64(bar.start)-f64(tab_bar_slot(a,bar,tab)-bar.first)*f64(bar.tab_width),8,f64(bar.tab_width)-8),grab_y=py,scroll_tick=time.tick_now()}
-}
-
-// The root pointer's top-level child identifies the visible window, including
-// under overlapping window-manager frames. Geometry alone would target a
-// covered terminal. Every queried client still belongs to our live workspace.
-tab_drag_desktop_hit :: proc()->(sx,sy:f64,hit:^App) {
-    display:=glfw.GetX11Display()
-    if display==nil {return}
-    root,child:x.Window;rx,ry,px,py:i32;mask:x.KeyMask
-    if !x.QueryPointer(display,x.DefaultRootWindow(display),&root,&child,&rx,&ry,&px,&py,&mask) {return}
-    sx,sy=f64(rx),f64(ry)
-    if child==0 {return}
-    for a in workspace_windows {
-        window:=a.renderer.window
-        if window==nil||glfw.WindowShouldClose(window)||glfw.GetWindowAttrib(window,glfw.ICONIFIED)!=0||glfw.GetWindowAttrib(window,glfw.VISIBLE)==0 {continue}
-        ancestor:=glfw.GetX11Window(window)
-        for _ in 0..<8 {
-            if ancestor==child {return sx,sy,a}
-            parent,window_root:x.Window;children:[^]x.Window;count:u32
-            if x.QueryTree(display,ancestor,&window_root,&parent,&children,&count)==cast(x.Status)0 {break}
-            if children!=nil {x.Free(children)}
-            if parent==0||parent==ancestor||parent==window_root {break}
-            ancestor=parent
-        }
-    }
-    return
+    tab_drag=Tab_Drag{source=a,tab=tab,group_id=group_id,armed=true,press_x=px,press_y=py,screen_x=px,screen_y=py,scroll_tick=time.tick_now()}
 }
 
 tab_drag_update_target :: proc(sx,sy:f64,occupied:^App) {
     previous:=tab_drag.target
     previous_insertion:=tab_drag.insertion;previous_onto:=tab_drag.onto;previous_mode:=tab_drag.drop_mode
     previous_scroll:=tab_drag.scroll_direction
-    tab_drag.occupied=occupied;tab_drag.target=nil;tab_drag.onto=nil;tab_drag.to_group=0;tab_drag.onto_group=0
+    tab_drag.target=nil;tab_drag.onto=nil;tab_drag.to_group=0;tab_drag.onto_group=0
     tab_drag.drop_mode=.Insert;tab_drag.scroll_direction=0;tab_drag.list_scroll=false
     if occupied!=nil&&!occupied.picker.open&&!occupied.menu.open {
         local_x,local_y:=sx,sy
-        if tab_drag.desktop {wx,wy:=glfw.GetWindowPos(occupied.renderer.window);local_x-=f64(wx);local_y-=f64(wy)}
         width,height:=glfw.GetWindowSize(occupied.renderer.window)
         tab_group_hover(occupied,f32(local_x),f32(local_y))
         moving:=1;if tab_drag.group_id!=0 {moving=tab_group_count(tab_drag.source,tab_drag.group_id)}
@@ -141,16 +107,13 @@ tab_drag_motion :: proc(a:^App,px,py:f64)->bool {
     if tab_drag_index(tab_drag.source,tab_drag.tab)<0 {tab_drag_cancel();return false}
     sx,sy:=px,py
     occupied:=tab_drag.source
-    if tab_drag.desktop {sx,sy,occupied=tab_drag_desktop_hit()}
-    else if a!=tab_drag.source {return true}
-    else {
-        width,height:=glfw.GetWindowSize(a.renderer.window)
-        if px<0||py<0||px>=f64(width)||py>=f64(height) {occupied=nil}
-    }
+    if a!=tab_drag.source {return true}
+    width,height:=glfw.GetWindowSize(a.renderer.window)
+    if px<0||py<0||px>=f64(width)||py>=f64(height) {occupied=nil}
     dx,dy:=sx-tab_drag.press_x,sy-tab_drag.press_y
     if !tab_drag.dragging&&dx*dx+dy*dy>=36 {a.last_tab_click=nil;tab_drag.dragging=true;tab_drag_mark()}
     if !tab_drag.dragging {return true}
-    if glfw.GetPlatform()==glfw.PLATFORM_WAYLAND&&tab_drag_wayland_start() {return true}
+    if tab_drag_wayland_start() {return true}
     moved:=sx!=tab_drag.screen_x||sy!=tab_drag.screen_y
     tab_drag.screen_x=sx;tab_drag.screen_y=sy
     tab_drag_update_target(sx,sy,occupied)
@@ -168,17 +131,6 @@ tab_drag_release :: proc(a:^App,px,py:f64)->bool {
     if !drag.dragging {return true}
     if drag.target!=nil {
         workspace_request_drop(drag.source,drag.tab,drag.target,drag.insertion,drag.drop_mode,drag.onto,drag.group_id,drag.to_group,drag.onto_group)
-    } else if drag.desktop {
-        // Leaving a tab strip detaches the tab, including a drop over terminal
-        // content. Native decorations and unavailable/full tab strips cancel.
-        if drag.occupied!=nil {
-            wx,wy:=glfw.GetWindowPos(drag.occupied.renderer.window)
-            width,height:=glfw.GetWindowSize(drag.occupied.renderer.window)
-            lx,ly:=drag.screen_x-f64(wx),drag.screen_y-f64(wy)
-            if lx<0||lx>=f64(width)||ly<f64(HEADER)||ly>=f64(height) {return true}
-        }
-        // Place the new tab under the hand at the same offset within its bar.
-        workspace_request_detach(drag.source,drag.tab,i32(drag.screen_x-f64(TAB_BAR_START)-drag.grab_x),i32(drag.screen_y-drag.grab_y),drag.group_id)
     }
     return true
 }

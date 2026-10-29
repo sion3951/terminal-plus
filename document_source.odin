@@ -30,11 +30,13 @@ Document_Source :: struct {
     listening:bool,
     workers:[4]^thread.Thread,
     token,host,root:string,
+    network:^Native_Network_State,
 }
 Document_HTTP :: struct {source:^Document_Source,fd:posix.FD,progress:time.Tick}
 
 document_kind :: proc(path:string)->Document_Kind {
-    ext:=strings.to_lower(filepath.ext(path),context.temp_allocator)
+    resource:=native_url_without_fragment(path);if query:=strings.index_byte(resource,'?');query>=0 {resource=resource[:query]}
+    ext:=strings.to_lower(filepath.ext(resource),context.temp_allocator)
     switch ext {
     case ".md",".markdown",".mdown",".mkd",".mkdn",".mdwn":return .Markdown
     case ".html",".htm",".xhtml":return .HTML
@@ -51,6 +53,7 @@ document_source_close :: proc(source:^Document_Source) {
     document_source_cancel(source)
     for worker in source.workers {if worker!=nil {thread.join(worker);thread.destroy(worker)}}
     if source.listening {net.close(source.listener)}
+    native_network_destroy(source)
     delete(source.profile.name);delete(source.profile.target);delete(source.token);delete(source.host);delete(source.root)
     source^={}
 }
@@ -110,16 +113,12 @@ document_markdown :: proc(bytes:[]u8,title,base:string)->(html:[]u8,error:string
     if base!="" {document_append(&output,"<base href=\"",escaped_base,"\">")}
     document_append(&output,"<style>",DOCUMENT_MARKDOWN_STYLE,"</style></head><body><main>")
     // CommonMark plus GitHub tables, strike-through, autolinks, tasks,
-    // admonitions and footnotes. Raw HTML is preserved for Chromium to render.
+    // admonitions and footnotes. Raw HTML is preserved for the native document renderer.
     FLAGS:c.uint=0x4|0x8|0x100|0x200|0x400|0x800|0x80000|0x100000
     if document_md_html(raw_data(bytes),c.uint(len(bytes)),document_markdown_output,&output,FLAGS,0x4)!=0 {
         delete(output);return nil,strings.clone("Markdown parser could not render this document.")
     }
-    append(&output,`</main><script>
-// Stable heading anchors are useful for both links in the document and copied URLs.
-const used=new Set;for(const h of document.querySelectorAll('h1,h2,h3,h4,h5,h6')){if(h.id){used.add(h.id);continue}let b=h.textContent.trim().toLowerCase().replace(/[^\p{L}\p{N}_\s-]/gu,'').replace(/\s+/g,'-'),id=b,n=0;while(used.has(id))id=b+'-'+(++n);used.add(id);h.id=id}
-if(location.hash){const e=document.getElementById(decodeURIComponent(location.hash.slice(1)));if(e)e.scrollIntoView()}
-</script></body></html>`)
+    append(&output,"</main></body></html>")
     return output[:],""
 }
 

@@ -9,31 +9,10 @@ session_touch :: proc(a:^App) {
     workspace_dirty=true;workspace_save_allowed=true
 }
 
-session_restore_position :: proc(a:^App,saved:Session_Window) {
-    if glfw.GetPlatform()!=glfw.PLATFORM_X11 {return}
-    x,y:=saved.x,saved.y
-    visible:=false
-    for monitor in glfw.GetMonitors() {
-        mx,my,mw,mh:=glfw.GetMonitorWorkarea(monitor)
-        overlap_x:=min(x+saved.width,int(mx+mw))-max(x,int(mx))
-        overlap_y:=min(y+int(HEADER),int(my+mh))-max(y,int(my))
-        if overlap_x>=64&&overlap_y>=32 {visible=true;break}
-    }
-    if !visible {
-        if monitor:=glfw.GetPrimaryMonitor();monitor!=nil {
-            mx,my,mw,mh:=glfw.GetMonitorWorkarea(monitor)
-            x=int(mx)+max(0,(int(mw)-saved.width)/2)
-            y=int(my)+max(0,(int(mh)-saved.height)/2)
-        }
-    }
-    glfw.SetWindowPos(a.renderer.window,i32(x),i32(y))
-}
-
 session_restore_window :: proc(a:^App,saved:Session_Window,command:string)->bool {
     a.explorer_width=clamp(saved.explorer_width,180,800)
     a.explorer_width_custom=saved.explorer_width_custom
     a.font_index=clamp(saved.font_index,0,len(FONT_SIZES)-1)
-    session_restore_position(a,saved)
     if saved.maximized {glfw.MaximizeWindow(a.renderer.window)}
     app_metrics(a)
     command_used:=false

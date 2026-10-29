@@ -8,6 +8,9 @@ import re
 import shutil
 import subprocess
 
+GLFW_PLATFORM_WAYLAND = 0x00060003
+GLFW_PLATFORM_X11 = 0x00060004
+
 
 def run(*args):
     return subprocess.check_output(args, text=True).strip()
@@ -70,6 +73,10 @@ if not args.utility:
     glfw.glfwGetVersion(ctypes.byref(major), ctypes.byref(minor), ctypes.byref(patch))
     if (major.value, minor.value) < (3, 4):
         raise SystemExit("terminal-plus requires GLFW 3.4 or newer; build that library before packaging.")
+    glfw.glfwPlatformSupported.argtypes = [ctypes.c_int]
+    glfw.glfwPlatformSupported.restype = ctypes.c_int
+    if not glfw.glfwPlatformSupported(GLFW_PLATFORM_WAYLAND) or glfw.glfwPlatformSupported(GLFW_PLATFORM_X11):
+        raise SystemExit("Package with Wayland-only GLFW: GLFW_BUILD_WAYLAND=ON and GLFW_BUILD_X11=OFF.")
 args.destination.parent.mkdir(parents=True, exist_ok=True)
 args.library_directory.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(args.binary, args.destination)
@@ -78,16 +85,15 @@ relative = os.path.relpath(args.library_directory, args.destination.parent)
 run("patchelf", "--set-rpath", f"$ORIGIN/{relative}", str(args.destination))
 pending = {args.only: direct[args.only]} if args.only else dict(direct)
 if not args.only and not args.utility:
-    # GLFW loads these at runtime, so they are absent from DT_NEEDED/ldd. Both
-    # desktop backends and the Vulkan loader remain available in the AppImage.
+    # GLFW loads these at runtime, so they are absent from DT_NEEDED/ldd.
+    # Include the native Wayland backend and Vulkan loader.
     cache = {}
     ldconfig = shutil.which("ldconfig") or "/sbin/ldconfig"
     for line in run(ldconfig, "-p").splitlines():
         match = re.match(r"\s*(\S+) \(.*\) => (/\S+)", line)
         if match:
             cache.setdefault(match[1], []).append(pathlib.Path(match[2]))
-    for name in ("libvulkan.so.1", "libwayland-client.so.0", "libwayland-cursor.so.0", "libwayland-egl.so.1", "libxkbcommon.so.0", "libdecor-0.so.0",
-                 "libX11.so.6", "libX11-xcb.so.1", "libXrandr.so.2", "libXinerama.so.1", "libXcursor.so.1", "libXi.so.6", "libXxf86vm.so.1"):
+    for name in ("libvulkan.so.1", "libwayland-client.so.0", "libwayland-cursor.so.0", "libwayland-egl.so.1", "libxkbcommon.so.0", "libdecor-0.so.0"):
         pending[name] = locate(name, cache)
 manifest = args.library_directory / "libraries.txt"
 copied = {}

@@ -1,10 +1,9 @@
 package main
 
 import "core:encoding/base64"
-import "core:fmt"
-import "core:os"
 import "core:strings"
 
+// Optional remote Bash adapter; local tabs use the native Odin shell.
 // Readline supplies the actual edited command, independent of prompt layout,
 // wrapping, Unicode, shell history, or terminal applications' keyboard input.
 // Decode only a single literal word; never eval a command or its substitutions.
@@ -35,6 +34,20 @@ __minor_report_directory() {
     return "$status"
 }
 PROMPT_COMMAND+=(__minor_report_directory)
+tview() {
+    if (( $# != 1 )) || [[ ! -f $1 || ! -r $1 ]]; then
+        printf 'Usage: tview IMAGE_OR_VIDEO\n' >&2
+        return 1
+    fi
+    local path=$1 LC_ALL=C hex= byte i
+    [[ $path == /* ]] || path=$PWD/$path
+    ((${#path}<=4096)) || return 1
+    for ((i=0; i<${#path}; i++)); do
+        printf -v byte '%02x' "'${path:i:1}"
+        hex+=$byte
+    done
+    __minor_emit_metadata minor-open "$hex"
+}
 __minor_literal_path() {
     local line=$1 partial=${2-} path= quote= ch ended=0 started=0 expand_home=0 i
     for ((i=0; i<${#line}; i++)); do
@@ -88,7 +101,7 @@ __minor_complete_initial() {
             COMPREPLY+=("$candidate")
         elif [[ -f $candidate && -r $candidate ]]; then
             case ${candidate,,} in
-                *.html|*.htm|*.xhtml|*.md|*.markdown|*.mdown|*.mkd|*.mkdn|*.mdwn) COMPREPLY+=("$candidate") ;;
+                *.html|*.htm|*.xhtml|*.md|*.markdown|*.mdown|*.mkd|*.mkdn|*.mdwn|*.png|*.jpg|*.jpeg|*.jpe|*.webp|*.gif|*.bmp|*.tif|*.tiff|*.avif|*.heic|*.heif|*.jxl|*.ico|*.ppm|*.pgm|*.pbm|*.pam|*.tga|*.exr|*.apng|*.svg|*.svgz|*.mp4|*.m4v|*.mkv|*.webm|*.mov|*.avi|*.mpeg|*.mpg|*.mpe|*.ts|*.mts|*.m2ts|*.ogv|*.ogg|*.flv|*.wmv|*.vob|*.3gp|*.mxf|*.mp3|*.aac|*.m4a|*.wav|*.flac|*.opus|*.oga|*.aiff|*.aif|*.wma) COMPREPLY+=("$candidate") ;;
             esac
         fi
     done < <(compgen -f -- "$cur")
@@ -101,7 +114,7 @@ __minor_document_enter() {
     local __minor_path
     __minor_literal_path "$READLINE_LINE" || return
     local path=$__minor_path
-    case ${path,,} in *.html|*.htm|*.xhtml|*.md|*.markdown|*.mdown|*.mkd|*.mkdn|*.mdwn) ;; *) return ;; esac
+    case ${path,,} in *.html|*.htm|*.xhtml|*.md|*.markdown|*.mdown|*.mkd|*.mkdn|*.mdwn|*.png|*.jpg|*.jpeg|*.jpe|*.webp|*.gif|*.bmp|*.tif|*.tiff|*.avif|*.heic|*.heif|*.jxl|*.ico|*.ppm|*.pgm|*.pbm|*.pam|*.tga|*.exr|*.apng|*.svg|*.svgz|*.mp4|*.m4v|*.mkv|*.webm|*.mov|*.avi|*.mpeg|*.mpg|*.mpe|*.ts|*.mts|*.m2ts|*.ogv|*.ogg|*.flv|*.wmv|*.vob|*.3gp|*.mxf|*.mp3|*.aac|*.m4a|*.wav|*.flac|*.opus|*.oga|*.aiff|*.aif|*.wma) ;; *) return ;; esac
     [[ -f $path && -r $path ]] || return
     [[ $path == /* ]] || path=$PWD/$path
     local LC_ALL=C hex= byte
@@ -122,15 +135,6 @@ for __minor_keymap in emacs-standard vi-insert; do
 done
 unset __minor_keymap
 `
-
-shell_integration_path :: proc()->string {
-    if !explorer_backend_init() {return ""}
-    path:=fmt.tprintf("%s/bashrc",file_runtime_directory)
-    if _,error:=os.stat(path,context.temp_allocator);error==nil {return path}
-    script:=fmt.tprintf("if [[ -r ~/.bashrc ]]; then source ~/.bashrc; fi\n%s",SHELL_DOCUMENT_INTEGRATION)
-    if os.write_entire_file(path,script,{.Read_User,.Write_User})!=nil {return ""}
-    return path
-}
 
 shell_remote_command :: proc(directory:string="")->string {
     // The remote rc removes itself immediately. User startup files remain owned
@@ -177,7 +181,7 @@ terminal_shell_metadata :: proc(t:^Terminal,value:[]u8) {
         if byte==0 {delete(path);return}
     }
     if directory {terminal_directory(t,string(path));delete(path);return}
-    if path[0]!='/'||document_kind(string(path))==.None||len(t.document_requests)>=MAX_TABS {delete(path);return}
+    if path[0]!='/'||(document_kind(string(path))==.None&&media_kind(string(path))==.None)||len(t.document_requests)>=MAX_TABS {delete(path);return}
     append(&t.document_requests,string(path))
 }
 
@@ -212,7 +216,11 @@ app_terminal_directory :: proc(a:^App,tab:^Tab) {
 app_shell_documents :: proc(a:^App) {
     for source in a.tabs {
         for path in source.terminal.document_requests {
-            document_open_tab(a,source,path)
+            if media_kind(path)!=.None {
+                for tab,index in a.tabs {if tab==source {app_select_device(a,index);break}}
+                media_view_open(a,source,path)
+            }
+            else {document_open_tab(a,source,path)}
             delete(path)
         }
         clear(&source.terminal.document_requests)

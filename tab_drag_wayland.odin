@@ -243,7 +243,7 @@ drag_wl_device_listener := Drag_WL_Device_Listener{drag_wl_device_offer,drag_wl_
 drag_wl_source_listener := Drag_WL_Source_Listener{drag_wl_source_target,drag_wl_source_send,drag_wl_source_done,drag_wl_source_drop,drag_wl_source_done,drag_wl_source_action}
 
 tab_drag_wayland_init :: proc() {
-    if glfw.GetPlatform()!=glfw.PLATFORM_WAYLAND||drag_wayland.registry!=nil {return}
+    if drag_wayland.registry!=nil {return}
     if !tab_drag_wayland_connect(glfw.GetWaylandDisplay()) {fmt.eprintln("Native Wayland tab dragging could not initialize.")}
 }
 tab_drag_wayland_connect :: proc(display:rawptr)->bool {

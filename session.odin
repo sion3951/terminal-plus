@@ -32,7 +32,10 @@ Session_Window :: struct {
     explorer_width:f32,
     explorer_width_custom:bool,
     font_index:int,
-    x,y,width,height:int,
+    // Read legacy window positions for session compatibility; Wayland places windows.
+    x:int `json:"x,omitempty"`,
+    y:int `json:"y,omitempty"`,
+    width,height:int,
     maximized:bool,
 }
 Session_State :: struct {
@@ -260,7 +263,6 @@ session_capture_window :: proc(window:^App,own:bool=false)->Session_Window {
     saved:=Session_Window{active=window.active,explorer_width=window.explorer_width,explorer_width_custom=window.explorer_width_custom,font_index=window.font_index}
     width,height:=glfw.GetWindowSize(window.renderer.window)
     saved.width=max(440,int(width));saved.height=max(200,int(height))
-    if glfw.GetPlatform()==glfw.PLATFORM_X11 {x,y:=glfw.GetWindowPos(window.renderer.window);saved.x=int(x);saved.y=int(y)}
     saved.maximized=glfw.GetWindowAttrib(window.renderer.window,glfw.MAXIMIZED)!=0
     saved.tabs=make([]Session_Record,len(window.tabs),context.temp_allocator)
     for tab,j in window.tabs {

@@ -10,9 +10,9 @@ import glfw "vendor:glfw"
 workspace_windows:[dynamic]^App
 workspace_focused:^App
 workspace_loading,workspace_dirty,workspace_save_allowed:bool
-Workspace_Action_Kind :: enum {New_Window,Detach,Move,Drop}
+Workspace_Action_Kind :: enum {New_Window,Move,Drop}
 Workspace_Action :: struct {
-    kind:Workspace_Action_Kind,source,target:^App,tab,onto:^Tab,index:int,x,y:i32,
+    kind:Workspace_Action_Kind,source,target:^App,tab,onto:^Tab,index:int,
     drop_mode:Tab_Drop_Mode,group_id,to_group,onto_group:u64,
 }
 workspace_actions:[dynamic]Workspace_Action
@@ -23,9 +23,6 @@ workspace_detached:[dynamic]Session_Window
 workspace_request_window :: proc(source:^App) {append(&workspace_actions,Workspace_Action{kind=.New_Window,source=source});glfw.PostEmptyEvent()}
 workspace_request_move :: proc(source:^App,tab:^Tab,target:^App,index:int) {
     append(&workspace_actions,Workspace_Action{kind=.Move,source=source,tab=tab,target=target,index=index});glfw.PostEmptyEvent()
-}
-workspace_request_detach :: proc(source:^App,tab:^Tab,x,y:i32,group_id:u64=0) {
-    append(&workspace_actions,Workspace_Action{kind=.Detach,source=source,tab=tab,x=x,y=y,group_id=group_id});glfw.PostEmptyEvent()
 }
 workspace_contains :: proc(a:^App)->bool {for window in workspace_windows {if window==a {return true}};return false}
 
@@ -53,17 +50,6 @@ workspace_process_actions :: proc() {
             }
             continue
         }
-        width,height:=glfw.GetWindowSize(source.renderer.window)
-        target:=workspace_create_window(int(width),int(height),source)
-        if target==nil {
-            workspace_window_error(source)
-            continue
-        }
-        glfw.SetWindowPos(target.renderer.window,action.x,action.y)
-        drop:=action;drop.kind=.Drop;drop.target=target;drop.index=0;drop.drop_mode=.Insert
-        if workspace_drop_tabs(drop) {
-            glfw.ShowWindow(target.renderer.window);glfw.FocusWindow(target.renderer.window)
-        } else {glfw.SetWindowShouldClose(target.renderer.window,true)}
     }
 }
 
@@ -91,7 +77,7 @@ workspace_create_window :: proc(width,height:int,copy_from:^App=nil)->^App {
     glfw.SetMouseButtonCallback(w,mouse_callback);glfw.SetCursorPosCallback(w,cursor_callback)
     glfw.SetScrollCallback(w,scroll_callback);glfw.SetWindowRefreshCallback(w,refresh_callback)
     glfw.SetWindowFocusCallback(w,focus_callback)
-    glfw.SetWindowPosCallback(w,window_position_callback);glfw.SetWindowSizeCallback(w,window_size_callback)
+    glfw.SetWindowSizeCallback(w,window_size_callback)
     glfw.SetWindowMaximizeCallback(w,window_maximize_callback)
     glfw.SetWindowCloseCallback(w,window_close_callback)
     glfw.SetWindowSizeLimits(w,440,200,glfw.DONT_CARE,glfw.DONT_CARE)
@@ -105,6 +91,7 @@ workspace_create_window :: proc(width,height:int,copy_from:^App=nil)->^App {
 }
 
 app_dispose_tab :: proc(tab:^Tab) {
+    media_view_destroy(tab.media)
     if tab.remote_end!=nil {remote_session_end_destroy(tab.remote_end);tab.remote_end=nil}
     explorer_state_destroy(&tab.explorer)
     if !tab.files {
@@ -140,9 +127,6 @@ workspace_new_window :: proc(source:^App)->^App {
     if a==nil {return nil}
     if !app_new_tab(a) {
         ordered_remove(&workspace_windows,len(workspace_windows)-1);workspace_destroy_window(a);return nil
-    }
-    if glfw.GetPlatform()==glfw.PLATFORM_X11 {
-        x,y:=glfw.GetWindowPos(source.renderer.window);glfw.SetWindowPos(a.renderer.window,x+32,y+32)
     }
     glfw.ShowWindow(a.renderer.window);glfw.FocusWindow(a.renderer.window)
     workspace_focused=a;session_touch(a)
@@ -201,9 +185,6 @@ workspace_prune_windows :: proc()->bool {
     return len(workspace_windows)>0
 }
 
-window_position_callback :: proc "c" (w:glfw.WindowHandle,x,y:c.int) {
-    context=runtime.default_context();if workspace_save_allowed {session_touch(app_from(w))}
-}
 window_size_callback :: proc "c" (w:glfw.WindowHandle,width,height:c.int) {
     context=runtime.default_context();a:=app_from(w);a.dirty=true;if workspace_save_allowed {session_touch(a)}
 }
@@ -229,7 +210,7 @@ workspace_step_window :: proc(a:^App,elapsed:f64,hold_local:bool)->f64 {
     app_process_input(a)
     app_process_output(a,hold_local,0.006/f64(max(1,len(workspace_windows))))
     tab:=active_tab(a);if tab==nil {return 0.001}
-    explorer_update(a);document_view_update(a)
+    explorer_update(a);document_view_update(a);media_view_update(a)
     // Closing a document can dispose the previously active tab.
     tab=active_tab(a);if tab==nil {return 0.001}
     session_error:=session_status_error()
@@ -237,7 +218,7 @@ workspace_step_window :: proc(a:^App,elapsed:f64,hold_local:bool)->f64 {
     if tab.unread {tab.unread=false;a.dirty=true}
     if tab.terminal.dirty {a.dirty=true;tab.terminal.dirty=false}
     now:=time.tick_now()
-    animate:=a.focused&&!a.picker.open&&!a.menu.open&&!a.explorer_visible&&tab.scroll==0&&tab.terminal.cursor_visible&&(!tab.remote||(tab.started&&!tab.exited))
+    animate:=tab.media==nil&&a.focused&&!a.picker.open&&!a.menu.open&&!a.explorer_visible&&tab.scroll==0&&tab.terminal.cursor_visible&&(!tab.remote||(tab.started&&!tab.exited))
     if time.duration_seconds(time.tick_diff(a.blink_tick,now))>=0.6 {
         a.blink= !a.blink;a.blink_tick=now;if animate {a.dirty=true}
     }
@@ -256,7 +237,7 @@ workspace_step_window :: proc(a:^App,elapsed:f64,hold_local:bool)->f64 {
             if title!=a.window_title {delete(a.window_title);a.window_title=strings.clone(title);glfw.SetWindowTitle(w,strings.clone_to_cstring(title,context.temp_allocator))}
         }
     }
-    wait:=min(explorer_search_delay(a),a.input_delay,renderer_frame_wait_delay(r))
+    wait:=min(explorer_search_delay(a),a.input_delay,renderer_frame_wait_delay(r,tab.media!=nil),document_view_wait_delay(a),media_wait_delay(a))
     if animate {wait=min(wait,max(0.001,0.6-time.duration_seconds(time.tick_diff(a.blink_tick,time.tick_now()))))}
     if a.output_work {wait=min(wait,0.001)}
     if a.capture!="" {wait=min(wait,max(0.001,a.capture_after-elapsed))}

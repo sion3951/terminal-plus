@@ -52,6 +52,7 @@ Tab :: struct {
     group_label: string,
     group_parents: [dynamic]Tab_Group_Ref,
     explorer: Explorer_State,
+    media: ^Media_View,
 }
 App :: struct {
     renderer: Renderer,
@@ -292,6 +293,7 @@ key_callback :: proc "c" (w:glfw.WindowHandle,key,scan,action,mods:c.int) {
     }
     if action!=glfw.PRESS&&action!=glfw.REPEAT {return}
     a:=app_from(w)
+    if media_view_key(a,key,mods,action) {return}
     if a.update_dialog {if action==glfw.PRESS&&key==glfw.KEY_ESCAPE {a.update_dialog=false;a.dirty=true};return}
     tab:=active_tab(a);if tab==nil {return}
     if tab_rename_key(a,key,mods) {return}
@@ -372,6 +374,7 @@ key_callback :: proc "c" (w:glfw.WindowHandle,key,scan,action,mods:c.int) {
 }
 char_callback :: proc "c" (w:glfw.WindowHandle,ch:rune) {
     context=runtime.default_context();a:=app_from(w)
+    if tab:=active_tab(a);tab!=nil&&tab.media!=nil {return}
     if a.update_dialog {return}
     if a.tab_rename.tab!=nil {tab_rename_insert(a,string_from_rune(ch));return}
     if a.menu.open {return}
@@ -428,6 +431,7 @@ tab_bar_hit :: proc(bar:Tab_Bar_Layout,x:f32)->int {
 mouse_callback :: proc "c" (w:glfw.WindowHandle,button,action,mods:c.int) {
     context=runtime.default_context();a:=app_from(w)
     x,y:=glfw.GetCursorPos(w)
+    if media_view_mouse(a,button,action,f32(x),f32(y)) {return}
     if updater_mouse(a,button,action,f32(x),f32(y)) {return}
     if tab_rename_mouse(a,button,action,f32(x),f32(y)) {return}
     if button==glfw.MOUSE_BUTTON_LEFT&&action==glfw.RELEASE&&tab_drag_release(a,x,y) {return}
@@ -505,6 +509,7 @@ app_hover_key :: proc(a:^App,x,y:f32)->u64 {
 }
 cursor_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
     context=runtime.default_context();a:=app_from(w)
+    if media_view_cursor(a,f32(x),f32(y)) {return}
     if a.update_dialog {a.dirty=true;return}
     tab_group_hover(a,f32(x),f32(y))
     if tab_drag_motion(a,x,y) {return}
@@ -520,6 +525,7 @@ cursor_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
 }
 scroll_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
     context=runtime.default_context();a:=app_from(w);tab:=active_tab(a);if tab==nil {return}
+    if tab.media!=nil {return}
     if a.update_dialog {return}
     ctrl:=glfw.GetKey(w,glfw.KEY_LEFT_CONTROL)==glfw.PRESS||glfw.GetKey(w,glfw.KEY_RIGHT_CONTROL)==glfw.PRESS
     if document_input_scroll(a,x,y,ctrl) {return}
@@ -607,7 +613,8 @@ app_render :: proc(a:^App) {
     ui_rect(a,bar.new_x,8,32,32,button_color)
     ui_text(a,"+",bar.new_x+10,14,20,button_text)
     tab_drag_render(a)
-    if a.explorer_visible {
+    if tab.media!=nil {media_view_render(a,tab.media)}
+    else if a.explorer_visible {
         if tab.explorer.preview_open {explorer_preview_render(a)} else {explorer_render(a)}
     } else {app_render_terminal(a)}
     // Surface actionable failures only; ordinary terminal use has no status bar.
@@ -632,6 +639,10 @@ app_render :: proc(a:^App) {
 
 app_render_terminal :: proc(a:^App) {
     r:=&a.renderer;tab:=active_tab(a);if tab==nil {return}
+    // Resolve each face at the same physical size as the terminal grid.
+    // Document font sizes can grow without changing terminal table offsets.
+    fonts: [Font_Kind]^Font_Size
+    for kind in Font_Kind {fonts[kind]=renderer_font_size(r,a.font_size,kind)}
     lo,hi:=selection_bounds(a)
     t:=&tab.terminal
     terminal_history_prepare(t,tab.scroll)
@@ -660,7 +671,7 @@ app_render_terminal :: proc(a:^App) {
             if cell.bold&&cell.italic {kind=.Terminal_Bold_Italic}
             else if cell.bold {kind=.Terminal_Bold}
             else if cell.italic {kind=.Terminal_Italic}
-            font:=&r.fonts[int(kind)*len(FONT_SIZES)+a.font_index]
+            font:=fonts[kind]
             glyph:=renderer_glyph(r,font,ch)
             // The face owns its fixed advance. Preserve its hinted bitmap at
             // 1:1 physical pixels, including native bold and italic shapes.
@@ -708,10 +719,25 @@ app_render_terminal :: proc(a:^App) {
 
 main :: proc() {
     args:=os.args
+    if len(args)>1&&args[1]=="--native-shell" {os.exit(native_shell_main(args[2:]))}
+    if len(args)>1&&native_shell_cli_flag(args[1]) {os.exit(native_shell_main(args[1:]))}
     if len(args)>1&&args[1]=="--session-host" {os.exit(local_session_host(args[2:]))}
     if len(args)>1&&args[1]=="--persistence-check" {
         if local_session_selfcheck() {fmt.println("Persistent local session detach/reattach: OK");return}
         fmt.eprintln("Persistent local session check failed");os.exit(1)
+    }
+    if len(args)>2&&args[1]=="--media-check" {
+        for path in args[2:] {if !media_sanity(path) {os.exit(1)}}
+        return
+    }
+    if len(args)>1&&args[1]=="--document-check" {
+        if !native_document_selfcheck() {fmt.eprintln("Native document check failed");os.exit(1)}
+        for path in args[2:] {if !native_document_fixture_check(path) {os.exit(1)}}
+        fmt.println("Native document parsing, scripting and interaction: OK");return
+    }
+    if len(args)>2&&args[1]=="--document-network-check" {
+        if native_network_selfcheck(args[2]) {fmt.println("Native HTTP navigation, form POST and cookies: OK");return}
+        os.exit(1)
     }
     command:string
     ssh_target:string
@@ -722,14 +748,12 @@ main :: proc() {
     for i:=1;i<len(args);i+=1 {
         switch args[i] {
         case "--help","-h":
-            fmt.println("Terminal+ — Odin + Vulkan + GLFW\nUsage: terminal+ [-e 'bash command'] [--ssh user@host[:port]] [--wayland | --x11] [--startup-profile]\n       terminal+ --self-check\n       terminal+ --capture image.png [--capture-after seconds] [--exit-after seconds]\n\n+ menu: files, new terminals/windows, remote machines. Ctrl+Shift+T: SSH picker. Ctrl+Shift+W: close device.\nCtrl+Tab: next device. Ctrl+1…9 / Alt+1…9: select device. Enter: reconnect SSH.\nDrag tabs to reorder, detach, or move between windows. Ctrl+Shift+N: new window.\nMouse wheel over the top bar: previous/next device.\n+ menu > Files / Ctrl+B: toggle explorer. Ctrl+Shift+E: focus. Ctrl+Shift+F: search files.\nExplorer: Ctrl+L path, Ctrl+F search, Ctrl+H hidden, F5 refresh, Enter open.\nCtrl+Shift+C/V: copy/paste. Shift+PageUp/Down: history. Ctrl+Shift+Home/End: first/last.\nCtrl+Left/Right: word movement. Ctrl+Backspace/Delete: delete words.\nclear / Ctrl+Shift+K: clear history. Ctrl+wheel or Ctrl +/-/0: font size. Tabs and scrollback restore on restart.")
+            fmt.println("Terminal+ — Odin + Vulkan + GLFW\nUsage: terminal+ [-e 'shell command'] [--ssh user@host[:port]] [--startup-profile]\n       terminal+ --self-check\n       terminal+ --capture image.png [--capture-after seconds] [--exit-after seconds]\n\n+ menu: files, new terminals/windows, remote machines. Ctrl+Shift+T: SSH picker. Ctrl+Shift+W: close device.\nCtrl+Tab: next device. Ctrl+1…9 / Alt+1…9: select device. Enter: reconnect SSH.\nDrag tabs to reorder or move between windows. Ctrl+Shift+N: new window.\nMouse wheel over the top bar: previous/next device.\n+ menu > Files / Ctrl+B: toggle explorer. Ctrl+Shift+E: focus. Ctrl+Shift+F: search files.\nExplorer: Ctrl+L path, Ctrl+F search, Ctrl+H hidden, F5 refresh, Enter open.\nCtrl+Shift+C/V: copy/paste. Shift+PageUp/Down: history. Ctrl+Shift+Home/End: first/last.\nCtrl+Left/Right: word movement. Ctrl+Backspace/Delete: delete words.\nclear / Ctrl+Shift+K: clear history. Ctrl+wheel or Ctrl +/-/0: font size. Tabs and scrollback restore on restart.")
             return
         case "--version":fmt.println("Terminal+",UPDATER_VERSION);return
         case "--check-updates":updater_cli_check();return
         case "--self-check":self_check=true
         case "--startup-profile":startup_profile=true
-        case "--wayland":renderer_platform=glfw.PLATFORM_WAYLAND
-        case "--x11":renderer_platform=glfw.PLATFORM_X11
         case "-e","--command":if i+1<len(args) {i+=1;command=args[i]} else {fmt.eprintln("-e requires a command");os.exit(1)}
         case "--ssh":if i+1<len(args) {i+=1;ssh_target=args[i]} else {fmt.eprintln("--ssh requires a destination");os.exit(1)}
         case "--capture":if i+1<len(args) {i+=1;capture=args[i]}
@@ -740,7 +764,7 @@ main :: proc() {
     }
     if ssh_target!="" {_,_,error:=device_target_parse(ssh_target);if error!="" {fmt.eprintln(error);os.exit(1)}}
     if self_check {
-        if terminal_selfcheck()&&pty_selfcheck() {fmt.println("Terminal parser and real Bash PTY: OK");return}
+        if terminal_selfcheck()&&pty_selfcheck() {fmt.println("Terminal parser and native shell PTY: OK");return}
         fmt.eprintln("Self-check failed");os.exit(1)
     }
     instance:=app_instance_init(command,ssh_target)

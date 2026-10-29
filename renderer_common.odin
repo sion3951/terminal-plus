@@ -14,9 +14,13 @@ Font_Size :: struct {
     pixels: f32,
     cell_width, ascent, descent: f32,
     glyphs: [95]Font_Glyph,
+    prewarmed: bool,
 }
 Font_Kind :: enum {UI,Terminal,Terminal_Bold,Terminal_Italic,Terminal_Bold_Italic}
 FONT_SIZES :: [10]f32{12,13,14,15,16,18,20,22,24,28}
+// Documents need headings and zoomed text beyond the terminal's size settings.
+// Large faces cache only the glyphs used by the current document.
+RENDER_FONT_SIZES :: [19]f32{12,13,14,15,16,18,20,22,24,28,32,36,40,48,56,64,80,96,160}
 INTER_FONT_DATA :: #load("assets/Inter-Regular.ttf")
 FONT_DATA := [Font_Kind][]u8{
     .UI=INTER_FONT_DATA,
@@ -25,7 +29,7 @@ FONT_DATA := [Font_Kind][]u8{
     .Terminal_Italic=#load("assets/AdwaitaMono-Italic.ttf"),
     .Terminal_Bold_Italic=#load("assets/AdwaitaMono-BoldItalic.ttf"),
 }
-FONT_COUNT :: len(FONT_SIZES)*len(Font_Kind)
+FONT_COUNT :: len(RENDER_FONT_SIZES)*len(Font_Kind)
 
 FONT_UNICODE_CACHE_LIMIT :: 2048
 ATLAS_HEIGHT :: 4096
@@ -69,10 +73,10 @@ renderer_rect :: proc(vertices: ^[dynamic]Vertex, x,y,w,h: f32, color: [4]f32) {
     renderer_quad(vertices,x,y,x+w,y+h,0,0,0,0,color)
 }
 renderer_font_size :: proc(r: ^Renderer, size: f32,kind:Font_Kind=.UI) -> ^Font_Size {
-    start:=int(kind)*len(FONT_SIZES)
+    start:=int(kind)*len(RENDER_FONT_SIZES)
     nearest := start
     distance := abs(r.fonts[start].pixels-size)
-    for i in start..<start+len(FONT_SIZES) {
+    for i in start..<start+len(RENDER_FONT_SIZES) {
         font:=r.fonts[i]
         next_distance := abs(font.pixels-size)
         if next_distance < distance { nearest=i; distance=next_distance }
@@ -111,7 +115,7 @@ renderer_text_width :: proc(r: ^Renderer, text: string, size: f32) -> f32 {
 // Measuring and drawing share the same glyph, including fallback advances.
 // Atlas dimensions never change while vertices are being generated.
 renderer_glyph :: proc(r:^Renderer,font:^Font_Size,ch:rune)->Font_Glyph {
-    if ch>=32 && ch<=126 && (font.kind==.UI||font.kind==.Terminal) {return font.glyphs[ch-32]}
+    if ch>=32 && ch<=126 && font.prewarmed {return font.glyphs[ch-32]}
     // Formatting controls and variation selectors have no standalone ink.
     // Do not insert visible replacement marks into emoji or joined names.
     if ch==0x00ad || ch==0x061c || ch==0xfeff || (ch>=0x200b && ch<=0x200f) || (ch>=0x202a && ch<=0x202e) || (ch>=0x2060 && ch<=0x206f) || (ch>=0xfe00 && ch<=0xfe0f) || (ch>=0xe0000 && ch<=0xe007f) || (ch>=0xe0100 && ch<=0xe01ef) {return {}}

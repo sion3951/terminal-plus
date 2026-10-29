@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage matching X11/XKB and Fontconfig data for the AppImage libraries."""
+"""Stage matching keyboard/compose and Fontconfig data for the AppImage libraries."""
 import argparse
 import os
 import pathlib
@@ -74,6 +74,7 @@ def main():
     manifest = args.appdir / "usr/lib/terminal-plus/libraries.txt"
     if not manifest.is_file():
         raise SystemExit("Run the AppImage library bundler before staging matching runtime data.")
+    # libxkbcommon uses these X11-named data directories on Wayland too.
     sources = (
         (pathlib.Path("/usr/share/X11/locale"), share / "X11/locale",
          "x11-compose-data", pathlib.Path("/usr/share/X11/locale/locale.dir")),
@@ -112,7 +113,7 @@ def main():
     for index, source in enumerate(sorted(fontconfig_sources)):
         entries[f"fontconfig-data/{index:03d}-{source.name}"] = str(source)
     manifest.write_text("\n".join(f"{name}: {source}" for name, source in sorted(entries.items())) + "\n")
-    print("Bundled matching X11 compose, XKB keyboard and Fontconfig configuration data.")
+    print("Bundled matching compose, XKB keyboard and Fontconfig configuration data.")
 
 
 if __name__ == "__main__":

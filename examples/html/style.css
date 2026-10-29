@@ -1,0 +1,26 @@
+@import "colors.css";
+* { box-sizing: border-box; }
+html { color: #dce4f1; background: #101722; font-size: 16px; line-height: 1.6; }
+body { max-width: 1040px; margin: 0 auto; padding: 28px; }
+h1 { color: #f0f5ff; font-size: 36px; margin: 0 0 12px; }
+h2 { color: var(--accent); font-size: 24px; margin: 24px 0 12px; }
+a { color: var(--accent); }
+nav { display: flex; flex-wrap: wrap; gap: 16px; padding: 12px 0; }
+p { margin: 10px 0; }
+.card { background: #1a2637; border: 1px solid #354760; padding: 18px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.wide { grid-column: span 2; }
+.flex { display: flex; gap: 12px; }
+.flex-one { flex: 1; }
+.flex-two { flex: 2; }
+button, input, select, textarea { font-size: 16px; margin: 6px; }
+button { background: #245789; color: white; padding: 8px 16px; }
+button:hover { background: #3779b5; }
+input:focus, textarea:focus { border: 2px solid #8cc9ff; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #526078; padding: 8px 12px; }
+pre { padding: 16px; background: #07101c; color: #dce4f1; white-space: pre-wrap; }
+.success { color: #80e0ad; }
+.warning { color: #ffd78d; }
+img, svg { max-width: 100%; }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } .wide { grid-column: span 1; } body { padding: 14px; } }

@@ -31,5 +31,5 @@ For a local build, install the dependencies in [BUILD.md](BUILD.md), then run
 Users run the AppImage directly or pass `--install` once for the applications
 menu and `terminal+` command. Installation is per user; updates replace the same
 AppImage atomically and keep the command link. GPU drivers, host CA certificates,
-Bash, OpenSSH and Chromium (for rendered documents) remain host dependencies.
+POSIX sh/standard Linux utilities, OpenSSH and FFmpeg (for image/video viewing) remain host dependencies.
 Bundled library and font licenses are included inside the AppImage.

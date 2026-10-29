@@ -1,0 +1,4 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Form results</title><link rel="stylesheet" href="style.css"></head><body>
+<nav><a href="forms.html">Back to forms</a><a href="index.html">All examples</a></nav><h1>Form submission result</h1><p>The values below are read using the native URLSearchParams API.</p><pre id="result">Reading query…</pre>
+<script>const params=new URLSearchParams(location.search);let lines=[];for(const pair of params.entries()){lines.push(pair[0]+': '+pair[1]);}document.getElementById('result').textContent=lines.length?lines.join('\n'):'No submitted values. Open the Forms page first.';</script>
+</body></html>

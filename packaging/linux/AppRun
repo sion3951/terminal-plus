@@ -8,6 +8,7 @@ fi
 export TERMINAL_PLUS_CURL=$appdir/usr/bin/curl
 export TERMINAL_PLUS_OPENSSL=$appdir/usr/bin/openssl
 export LIBDECOR_PLUGIN_DIR=$appdir/usr/lib/terminal-plus/libdecor/plugins-1
+# libxkbcommon uses shared compose/keyboard data for native Wayland input.
 export XLOCALEDIR=$appdir/usr/share/X11/locale
 export XKB_CONFIG_ROOT=$appdir/usr/share/X11/xkb
 # RUNPATHs keep bundled libraries private to the app; host commands and GPU
