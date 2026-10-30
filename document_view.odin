@@ -255,7 +255,7 @@ document_view_update :: proc(a:^App) {
 }
 document_view_render_status :: proc(a:^App,view:^Document_View,box:Preview_Layout) {
     if !atomic.atomic_load(&view.done) {ui_text(a,"Preparing native document…",box.x+20,box.y+88,14,MUTED);return}
-    if view.error!="" {ui_fit_text(a,view.error,box.x+20,box.y+88,14,box.w-40,Color{0.96,0.36,0.36,1});return}
+    if view.error!="" {ui_fit_text(a,view.error,box.x+20,box.y+88,14,box.w-40,DANGER);return}
     native_document_render(a,view,box)
     native_select_render(a,view)
     document_find_render(a,view,box)

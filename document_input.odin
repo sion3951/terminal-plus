@@ -148,16 +148,31 @@ document_find_rect :: proc(box:Preview_Layout)->Explorer_Rect {
 }
 document_find_render :: proc(a:^App,view:^Document_View,box:Preview_Layout) {
     if !view.find_open {return}
-    rect:=document_find_rect(box);explorer_field(a,rect,view.find_focused,false)
-    x:=rect.x+12;width:=rect.w-94
+    rect:=document_find_rect(box)
+    ui_glass(a,rect.x,rect.y,rect.w,rect.h,RADIUS_POPUP-2)
+    if view.find_focused {ui_round_border(a,rect.x-2,rect.y-2,rect.w+4,rect.h+4,RADIUS_POPUP,FOCUS_RING)}
+    explorer_icon(a,.Search,rect.x+12,rect.y+rect.h/2-7,MUTED)
+    x:=rect.x+36;width:=rect.w-120
     start:=explorer_input_start(a,view.find_text[:],view.find_cursor,13,width-4)
-    if view.find_focused {text_edit_selection_render(a,view.find_text[:],start,view.find_cursor,view.find_anchor,view.find_selecting,view.find_all,x,rect.y+9,13,width,22)}
-    ui_fit_text(a,string(view.find_text[start:]),x,rect.y+15,13,width,TEXT)
-    if len(view.find_text)==0 {ui_text(a,"Find in page",x,rect.y+15,13,MUTED)}
-    if view.find_focused {caret:=renderer_text_width(&a.renderer,string(view.find_text[start:view.find_cursor]),13*a.scale)/a.scale;ui_rect(a,x+caret,rect.y+11,1,20,ACCENT)}
-    ui_text(a,"‹",rect.x+rect.w-74,rect.y+12,18,SOFT)
-    ui_text(a,"›",rect.x+rect.w-50,rect.y+12,18,SOFT)
-    ui_text(a,"×",rect.x+rect.w-26,rect.y+13,16,MUTED)
+    if view.find_focused {text_edit_selection_render(a,view.find_text[:],start,view.find_cursor,view.find_anchor,view.find_selecting,view.find_all,x,rect.y+rect.h/2-11,13,width,22)}
+    ui_text_mid(a,string(view.find_text[start:]),x,rect.y+rect.h/2,13,width,TEXT)
+    if len(view.find_text)==0 {ui_text_mid(a,"Find in page",x,rect.y+rect.h/2,13,width,MUTED)}
+    if view.find_focused {caret:=renderer_text_width(&a.renderer,string(view.find_text[start:view.find_cursor]),13*a.scale)/a.scale;ui_caret(a,x+caret,rect.y+rect.h/2-9,18)}
+    mx,my:=glfw.GetCursorPos(a.renderer.window)
+    right:=rect.x+rect.w;cy:=rect.y+rect.h/2
+    over:=f32(my)>=rect.y&&f32(my)<rect.y+rect.h
+    ui_rect(a,right-84,cy-9,1,18,Color{1,1,1,0.08})
+    for i in 0..<3 {
+        bx:=right-80+f32(i)*24
+        hover:=over&&f32(mx)>=bx&&f32(mx)<bx+24
+        if hover {ui_round(a,bx+1,cy-11,22,22,6,Color{1,1,1,0.08})}
+        color:=TEXT if hover else SOFT
+        switch i {
+        case 0:ui_icon_chevron(a,bx+12,cy,9,color,3)
+        case 1:ui_icon_chevron(a,bx+12,cy,9,color,2)
+        case 2:ui_icon_close(a,bx+12,cy,7,color)
+        }
+    }
 }
 
 native_document_hit :: proc(a:^App,view:^Document_View,mouse_x,mouse_y:f32)->(node,offset:int) {

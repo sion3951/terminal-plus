@@ -27,6 +27,7 @@ renderer_pixels_publish :: proc(frame:^Renderer_Pixels,pixels:[]u8,width,height:
 // Hand a decoded buffer to the renderer and recycle its previous allocation.
 // No frame-sized copy or allocation occurs on the presentation thread.
 renderer_pixels_exchange :: proc(frame:^Renderer_Pixels,pixels:^[dynamic]u8,width,height:int) {
+    if pixels==nil||width<=0||height<=0||width>16384||height>16384||len(pixels^)!=width*height*4 {return}
     sync.mutex_lock(&frame.mutex);defer sync.mutex_unlock(&frame.mutex)
     frame.storage,pixels^=pixels^,frame.storage
     frame.pixels=raw_data(frame.storage);frame.pixel_width=width;frame.pixel_height=height;frame.generation+=1

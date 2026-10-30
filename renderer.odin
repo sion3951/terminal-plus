@@ -102,6 +102,10 @@ Renderer :: struct {
     font_memory: vk.DeviceMemory,
     font_view: vk.ImageView,
     font_texture_height: int,
+    font_staging: vk.Buffer,
+    font_staging_memory: vk.DeviceMemory,
+    font_staging_mapping: rawptr,
+    font_staging_capacity: int,
     sampler: vk.Sampler,
     descriptor_layout: vk.DescriptorSetLayout,
     descriptor_pool: vk.DescriptorPool,
@@ -486,6 +490,15 @@ renderer_font_scan :: proc(atlas:^Font_Atlas) {
 renderer_font_unicode :: proc(atlas:^Font_Atlas,index:int,ch:rune)->(Font_Glyph,bool) {
     face:=cast(^FT_Face)atlas.faces[atlas.fonts[index].kind]
     if FT_Get_Char_Index(face,c.ulong(ch))!=0 {return renderer_font_freetype_glyph(atlas,face,index,ch)}
+    if !atlas.fallback_attempted {
+        atlas.fallback_attempted=true
+        fallback:^FT_Face
+        data:=FALLBACK_FONT_DATA
+        if FT_New_Memory_Face(atlas.library,raw_data(data),c.long(len(data)),0,&fallback)==0 {atlas.fallback=fallback}
+    }
+    if fallback:=cast(^FT_Face)atlas.fallback;fallback!=nil&&FT_Get_Char_Index(fallback,c.ulong(ch))!=0 {
+        if glyph,ok:=renderer_font_freetype_glyph(atlas,fallback,index,ch);ok {return glyph,true}
+    }
     if !atlas.sources_scanned {renderer_font_scan(atlas)}
     for &source in atlas.sources {
         if !source.attempted {
@@ -516,6 +529,7 @@ renderer_font_dispose :: proc(atlas:^Font_Atlas) {
         delete(source.path);delete(source.data)
     }
     delete(atlas.sources)
+    if atlas.fallback!=nil {FT_Done_Face(cast(^FT_Face)atlas.fallback)}
     for face in atlas.faces {if face!=nil {FT_Done_Face(cast(^FT_Face)face)}}
     if atlas.library!=nil {FT_Done_FreeType(atlas.library)}
     delete(atlas.pixels);delete(atlas.unicode)
@@ -559,15 +573,26 @@ renderer_font_upload :: proc(r: ^Renderer, atlas: ^Font_Atlas) -> bool {
         if !renderer_ok(r.dispatch.AllocateMemory(r.device,&alloc,nil,&r.font_memory), "font memory") { return false }
         if !renderer_ok(r.dispatch.BindImageMemory(r.device,r.font_image,r.font_memory,0), "bind font") { return false }
     }
-    staging: vk.Buffer; memory: vk.DeviceMemory
-    defer {
-        if staging!=0 {r.dispatch.DestroyBuffer(r.device,staging,nil)}
-        if memory!=0 {r.dispatch.FreeMemory(r.device,memory,nil)}
+    // Glyph cache misses can upload on consecutive frames. Keep the host-visible
+    // staging allocation mapped instead of allocating and mapping it every time.
+    // Each upload below completes before this storage can be written again.
+    if r.font_staging_capacity<len(pixels) {
+        staging:vk.Buffer;memory:vk.DeviceMemory;mapping:rawptr
+        defer {
+            if mapping!=nil {r.dispatch.UnmapMemory(r.device,memory)}
+            if staging!=0 {r.dispatch.DestroyBuffer(r.device,staging,nil)}
+            if memory!=0 {r.dispatch.FreeMemory(r.device,memory,nil)}
+        }
+        if !renderer_buffer(r,len(pixels),{.TRANSFER_SRC},&staging,&memory) {return false}
+        if !renderer_ok(r.dispatch.MapMemory(r.device,memory,0,vk.DeviceSize(len(pixels)),{},&mapping),"map font staging") {return false}
+        if r.font_staging_mapping!=nil {r.dispatch.UnmapMemory(r.device,r.font_staging_memory)}
+        if r.font_staging!=0 {r.dispatch.DestroyBuffer(r.device,r.font_staging,nil)}
+        if r.font_staging_memory!=0 {r.dispatch.FreeMemory(r.device,r.font_staging_memory,nil)}
+        r.font_staging,r.font_staging_memory,r.font_staging_mapping=staging,memory,mapping
+        r.font_staging_capacity=len(pixels)
+        staging=0;memory=0;mapping=nil
     }
-    if !renderer_buffer(r,len(pixels),{.TRANSFER_SRC},&staging,&memory) { return false }
-    mapped: rawptr
-    if !renderer_ok(r.dispatch.MapMemory(r.device,memory,0,vk.DeviceSize(len(pixels)),{},&mapped),"map font staging") {return false}
-    mem.copy(mapped,raw_data(pixels),len(pixels)); r.dispatch.UnmapMemory(r.device,memory)
+    mem.copy(r.font_staging_mapping,raw_data(pixels),len(pixels))
     begin := vk.CommandBufferBeginInfo{sType=.COMMAND_BUFFER_BEGIN_INFO,flags={.ONE_TIME_SUBMIT}}
     if !renderer_ok(r.dispatch.BeginCommandBuffer(r.command,&begin),"begin font upload") {return false}
     barrier := vk.ImageMemoryBarrier{sType=.IMAGE_MEMORY_BARRIER,oldLayout=.UNDEFINED,newLayout=.TRANSFER_DST_OPTIMAL,
@@ -581,7 +606,7 @@ renderer_font_upload :: proc(r: ^Renderer, atlas: ^Font_Atlas) -> bool {
     }
     r.dispatch.CmdPipelineBarrier(r.command,source_stage,{.TRANSFER},{},0,nil,0,nil,1,&barrier)
     region := vk.BufferImageCopy{imageSubresource={aspectMask={.COLOR},layerCount=1},imageExtent={ATLAS_SIZE,u32(texture_height),1}}
-    r.dispatch.CmdCopyBufferToImage(r.command,staging,r.font_image,.TRANSFER_DST_OPTIMAL,1,&region)
+    r.dispatch.CmdCopyBufferToImage(r.command,r.font_staging,r.font_image,.TRANSFER_DST_OPTIMAL,1,&region)
     barrier.oldLayout=.TRANSFER_DST_OPTIMAL; barrier.newLayout=.SHADER_READ_ONLY_OPTIMAL
     barrier.srcAccessMask={.TRANSFER_WRITE}; barrier.dstAccessMask={.SHADER_READ}
     r.dispatch.CmdPipelineBarrier(r.command,{.TRANSFER},{.FRAGMENT_SHADER},{},0,nil,0,nil,1,&barrier)
@@ -649,12 +674,13 @@ renderer_pipeline :: proc(r: ^Renderer) -> bool {
         {sType=.PIPELINE_SHADER_STAGE_CREATE_INFO,stage={.VERTEX},pName="main"},
         {sType=.PIPELINE_SHADER_STAGE_CREATE_INFO,stage={.FRAGMENT},pName="main"}}
     binding := vk.VertexInputBindingDescription{binding=0,stride=size_of(Vertex),inputRate=.VERTEX}
-    attributes := [4]vk.VertexInputAttributeDescription{
-        {location=0,binding=0,format=.R32G32_SFLOAT,offset=0},
-        {location=1,binding=0,format=.R32G32_SFLOAT,offset=8},
-        {location=2,binding=0,format=.R32G32B32A32_SFLOAT,offset=16},
-        {location=3,binding=0,format=.R32_SFLOAT,offset=32}}
-    vertex := vk.PipelineVertexInputStateCreateInfo{sType=.PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,vertexBindingDescriptionCount=1,pVertexBindingDescriptions=&binding,vertexAttributeDescriptionCount=4,pVertexAttributeDescriptions=raw_data(attributes[:])}
+    attributes := [5]vk.VertexInputAttributeDescription{
+        {location=0,binding=0,format=.R32G32_SFLOAT,offset=u32(offset_of(Vertex,pos))},
+        {location=1,binding=0,format=.R32G32_SFLOAT,offset=u32(offset_of(Vertex,uv))},
+        {location=2,binding=0,format=.R32G32B32A32_SFLOAT,offset=u32(offset_of(Vertex,color))},
+        {location=3,binding=0,format=.R32_SFLOAT,offset=u32(offset_of(Vertex,texture))},
+        {location=4,binding=0,format=.R32G32B32A32_SFLOAT,offset=u32(offset_of(Vertex,shape))}}
+    vertex := vk.PipelineVertexInputStateCreateInfo{sType=.PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,vertexBindingDescriptionCount=1,pVertexBindingDescriptions=&binding,vertexAttributeDescriptionCount=len(attributes),pVertexAttributeDescriptions=raw_data(attributes[:])}
     assembly := vk.PipelineInputAssemblyStateCreateInfo{sType=.PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,topology=.TRIANGLE_LIST}
     viewport := vk.PipelineViewportStateCreateInfo{sType=.PIPELINE_VIEWPORT_STATE_CREATE_INFO,viewportCount=1,scissorCount=1}
     raster := vk.PipelineRasterizationStateCreateInfo{sType=.PIPELINE_RASTERIZATION_STATE_CREATE_INFO,polygonMode=.FILL,cullMode={},frontFace=.COUNTER_CLOCKWISE,lineWidth=1}
@@ -983,6 +1009,9 @@ renderer_destroy :: proc(r: ^Renderer) {
         if r.font_view != 0 { r.dispatch.DestroyImageView(r.device,r.font_view,nil) }
         if r.font_image != 0 { r.dispatch.DestroyImage(r.device,r.font_image,nil) }
         if r.font_memory != 0 { r.dispatch.FreeMemory(r.device,r.font_memory,nil) }
+        if r.font_staging_mapping != nil { r.dispatch.UnmapMemory(r.device,r.font_staging_memory) }
+        if r.font_staging != 0 { r.dispatch.DestroyBuffer(r.device,r.font_staging,nil) }
+        if r.font_staging_memory != 0 { r.dispatch.FreeMemory(r.device,r.font_staging_memory,nil) }
         if r.vertex_mapping != nil { r.dispatch.UnmapMemory(r.device,r.vertex_memory) }
         if r.vertex_buffer != 0 { r.dispatch.DestroyBuffer(r.device,r.vertex_buffer,nil) }
         if r.vertex_memory != 0 { r.dispatch.FreeMemory(r.device,r.vertex_memory,nil) }

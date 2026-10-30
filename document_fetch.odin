@@ -15,13 +15,26 @@ Native_Fetch_Job :: struct {
     response:Native_HTTP_Response,
     done:bool,
 }
+// Scripts must not override transport framing, credentials, or browser-owned
+// origin metadata. These headers are supplied by the transport itself.
+native_fetch_forbidden_header :: proc(name:string)->bool {
+    lower:=strings.to_lower(name,context.temp_allocator)
+    if strings.has_prefix(lower,"proxy-")||strings.has_prefix(lower,"sec-") {return true}
+    switch lower {
+    case "accept-charset","accept-encoding","access-control-request-headers","access-control-request-method",
+         "connection","content-length","cookie","cookie2","date","dnt","expect","host","keep-alive",
+         "origin","referer","set-cookie","te","trailer","transfer-encoding","upgrade","via":return true
+    }
+    return false
+}
 native_fetch_worker :: proc(worker:^thread.Thread) {
     job:=cast(^Native_Fetch_Job)worker.data
     defer {sync.atomic_store(&job.done,true);terminal_wake()}
     if native_http_url(job.url) {
         job.response=native_network_request(&job.view.source,job.url,job.method,job.body,job.content_type,job.headers)
         origin:=native_url_origin(job.view.resource_path);defer delete(origin)
-        destination:=native_url_origin(job.url);defer delete(destination)
+        // Redirects can change the response origin even for a same-origin request.
+        destination:=native_url_origin(job.response.url);defer delete(destination)
         if origin!=destination {
             allowed:=native_http_header(job.response.headers,"Access-Control-Allow-Origin")
             if allowed!="*"&&allowed!=origin {job.response.error="The response does not allow this document origin (CORS)."}
@@ -47,9 +60,9 @@ native_fetch_start :: proc(view:^Document_View,args:[]Native_JS_Value)->Native_J
             out:=make([dynamic]u8,context.temp_allocator)
             for key,value in headers.reference.properties {
                 text:=native_js_value_text(value)
-                if strings.contains_any(key,"\r\n:\x00")||strings.contains_any(text,"\r\n\x00") {continue}
+                if !native_http_token(key)||native_fetch_forbidden_header(key)||strings.contains_any(text,"\r\n\x00") {continue}
                 append(&out,fmt.tprintf("%s: %s\r\n",key,text))
-                if strings.equal_fold(key,"content-type") {job.content_type=strings.clone(text,os.heap_allocator())}
+                if strings.equal_fold(key,"content-type") {delete(job.content_type,os.heap_allocator());job.content_type=strings.clone(text,os.heap_allocator())}
             }
             job.headers=strings.clone(string(out[:]),os.heap_allocator())
         }
@@ -59,6 +72,11 @@ native_fetch_start :: proc(view:^Document_View,args:[]Native_JS_Value)->Native_J
         headers:=fmt.aprintf("%sOrigin: %s\r\n",job.headers,origin)
         delete(origin);delete(job.headers,os.heap_allocator());job.headers=strings.clone(headers,os.heap_allocator());delete(headers)
     }
+    if !native_http_token(job.method)||job.method=="CONNECT"||job.method=="TRACE"||job.method=="TRACK" {
+        native_js_promise_reject(js,promise,native_js_string(js,"Invalid or forbidden HTTP method."));native_fetch_free(job);return promise
+    }
+    // Initialize on the script thread before concurrent fetch workers can use it.
+    native_network_init(&view.source)
     job.worker=thread.create(native_fetch_worker)
     if job.worker==nil {native_js_promise_reject(js,promise,native_js_string(js,"Could not start the document request."));native_fetch_free(job);return promise}
     append(&view.fetches,job);job.worker.data=job;thread.start(job.worker)

@@ -67,11 +67,20 @@ native_cookie_merge :: proc(source:^Document_Source,jar:string) {
         else {state.cookies[strings.clone(key,os.heap_allocator())]=strings.clone(line,os.heap_allocator())}
     }
 }
+native_http_token :: proc(value:string)->bool {
+    if value=="" {return false}
+    for byte in transmute([]u8)value {
+        if byte>='a'&&byte<='z'||byte>='A'&&byte<='Z'||byte>='0'&&byte<='9'||strings.index_byte("!#$%&'*+-.^_`|~",byte)>=0 {continue}
+        return false
+    }
+    return true
+}
 // The existing curl transport handles HTTP/TLS, redirects and cookies. Loading
 // and cancellation stay on workers; no browser or new linked library is used.
 native_network_request :: proc(source:^Document_Source,url:string,method:string="GET",body:string="",content_type:string="",headers:string="")->Native_HTTP_Response {
     result:=Native_HTTP_Response{allocator=context.allocator,url=strings.clone(url)}
     if !native_http_url(url) {result.error="Unsupported resource URL.";return result}
+    if !native_http_token(method) {result.error="Invalid HTTP method.";return result}
     if sync.atomic_load(&source.stopping) {result.error="Cancelled.";return result}
     directory,temp_error:=os.mkdir_temp("","minor-document-http-*",context.allocator)
     if temp_error!=nil {result.error="Could not create the document resource directory.";return result}
@@ -91,7 +100,6 @@ native_network_request :: proc(source:^Document_Source,url:string,method:string=
         "--dump-header",header_path,"--write-out","%{http_code}\n%{content_type}\n%{url_effective}\n","--output",path)
     if method=="HEAD" {append(&command,"--head")}
     else if method!="GET" {
-        if strings.contains_any(method,"\r\n \x00") {result.error="Invalid HTTP method.";return result}
         if os.write_entire_file(request_path,body,{.Read_User,.Write_User})!=nil {result.error="Could not prepare HTTP request data.";return result}
         // --data-binary uses normal POST redirect rules; custom methods are explicit.
         if method!="POST" {append(&command,"--request",method)}
@@ -113,7 +121,10 @@ native_network_request :: proc(source:^Document_Source,url:string,method:string=
         if wait_error!=nil||!state.exited||state.exit_code!=0 {result.error="Could not download the document resource.";return result}
         break
     }
-    result.bytes,_=os.read_entire_file(path,context.allocator)
+    read_error:os.Error
+    result.bytes,read_error=os.read_entire_file(path,context.allocator)
+    if read_error!=nil {result.error="Could not read the downloaded document resource.";return result}
+    if len(result.bytes)>32*1024*1024 {result.error="Document resource exceeds 32 MiB.";return result}
     header_bytes,_:=os.read_entire_file(header_path,context.allocator);result.headers=string(header_bytes)
     metadata,_:=os.read_entire_file(meta_path,context.temp_allocator)
     fields:=strings.split(string(metadata),"\n",context.temp_allocator)

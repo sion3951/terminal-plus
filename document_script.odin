@@ -58,7 +58,8 @@ Native_JS :: struct {
     globals:^Native_JS_Environment,
     scripts:map[string]^Native_JS_Statement,
     error:string,
-    fuel,depth:int,
+    fuel,depth,eval_depth,text_depth:int,
+    text_stack:[64]^Native_JS_Object,
     throwing:bool,
     exception:Native_JS_Value,
     initialized:bool,
@@ -156,6 +157,18 @@ native_js_truth :: proc(value:Native_JS_Value)->bool {
     }
 }
 native_js_text :: proc(js:^Native_JS,value:Native_JS_Value)->string {
+    // Array stringification treats references already being converted as empty.
+    // Track the active path, so shared (but non-cyclic) arrays still stringify twice.
+    if value.reference!=nil&&(value.kind==.Array||value.kind==.Object) {
+        for reference in js.text_stack[:js.text_depth] {if reference==value.reference {return ""}}
+        if js.text_depth>=len(js.text_stack) {native_js_fail(js,"JavaScript string conversion nesting limit reached.");return ""}
+        js.text_stack[js.text_depth]=value.reference;js.text_depth+=1
+        defer {js.text_depth-=1;js.text_stack[js.text_depth]=nil}
+        return native_js_text_inner(js,value)
+    }
+    return native_js_text_inner(js,value)
+}
+native_js_text_inner :: proc(js:^Native_JS,value:Native_JS_Value)->string {
     #partial switch value.kind {
     case .Undefined:return "undefined"
     case .Null:return "null"
@@ -165,7 +178,7 @@ native_js_text :: proc(js:^Native_JS,value:Native_JS_Value)->string {
     case .Function,.Builtin:return "[function]"
     case .Array:
         result:=make([dynamic]u8,native_js_allocator(js))
-        if value.reference!=nil {for item,i in value.reference.items {if i>0 {append(&result,',')};if item.kind!=.Null&&item.kind!=.Undefined {append(&result,native_js_text(js,item))}}}
+        if value.reference!=nil {for item,i in value.reference.items {if !native_js_step(js) {break};if i>0 {append(&result,',')};if item.kind!=.Null&&item.kind!=.Undefined {append(&result,native_js_text(js,item))}}}
         return string(result[:])
     case .Object:if value.reference!=nil&&value.reference.error_object {name:=native_js_property(js,value,"name");message:=native_js_property(js,value,"message");return native_js_clone(js,fmt.tprintf("%s: %s",native_js_text(js,name),native_js_text(js,message)))};return "[object Object]"
     }
@@ -642,6 +655,8 @@ native_js_assign :: proc(js:^Native_JS,scope:^Native_JS_Environment,target:^Nati
 }
 native_js_call_function :: proc(js:^Native_JS,value:Native_JS_Value,args:[]Native_JS_Value,this_value:Native_JS_Value)->Native_JS_Value {
     if !native_js_step(js) {return {}}
+    js.depth+=1;defer {js.depth-=1}
+    if js.depth>64 {native_js_fail(js,"JavaScript call depth exceeded.");return {}}
     if value.kind==.Builtin {
         if strings.has_prefix(value.text,"__method:") {return native_js_method(js,this_value,value.text[9:],args)}
         if value.reference!=nil&&value.reference.bound!=nil {bound:=value.reference.bound;combined:=make([dynamic]Native_JS_Value,native_js_allocator(js));append(&combined,..bound.arguments);append(&combined,..args);return native_js_call_function(js,bound.callable,combined[:],bound.receiver)}
@@ -649,8 +664,6 @@ native_js_call_function :: proc(js:^Native_JS,value:Native_JS_Value,args:[]Nativ
         return native_js_builtin(js,value.text,args)
     }
     if value.kind!=.Function||value.function==nil {native_js_fail(js,"The JavaScript value is not callable.");return {}}
-    js.depth+=1;defer {js.depth-=1}
-    if js.depth>64 {native_js_fail(js,"JavaScript call depth exceeded.");return {}}
     function:=value.function
     if function.async {return native_js_async_start(js,value,args,this_value)}
     previous_async:=js.current_async;js.current_async=nil;defer {js.current_async=previous_async}
@@ -672,6 +685,8 @@ native_js_call_function :: proc(js:^Native_JS,value:Native_JS_Value,args:[]Nativ
     return {}
 }
 native_js_eval :: proc(js:^Native_JS,scope:^Native_JS_Environment,expression:^Native_JS_Expression)->Native_JS_Value {
+    js.eval_depth+=1;defer {js.eval_depth-=1}
+    if js.eval_depth>256 {native_js_fail(js,"JavaScript expression nesting limit reached.");return {}}
     if js.current_async!=nil&&expression!=nil {if js.current_async.rejected_expression==expression {js.throwing=true;js.exception=js.current_async.await_exception;return {}};if value,okay:=js.current_async.cache[expression];okay {return value}}
     value:=native_js_eval_inner(js,scope,expression)
     if js.current_async!=nil&&expression!=nil&&js.awaiting.reference==nil&&js.error==""&&!js.throwing {js.current_async.cache[expression]=value}
@@ -984,16 +999,17 @@ native_js_method :: proc(js:^Native_JS,receiver:Native_JS_Value,name:string,args
     native_js_fail(js,fmt.tprintf("Unsupported JavaScript method: %s",name));return {}
 }
 native_js_json_write :: proc(js:^Native_JS,output:^[dynamic]u8,value:Native_JS_Value,depth:int) {
+    if !native_js_step(js) {return}
     if depth>64 {native_js_fail(js,"JSON object nesting limit reached.");return}
     #partial switch value.kind {
     case .Undefined,.Null:append(output,"null")
     case .Bool,.Number:append(output,native_js_text(js,value))
     case .String:bytes,error:=json.marshal(value.text,allocator=native_js_allocator(js));if error==nil {append(output,..bytes)}
     case .Array:
-        append(output,'[');if value.reference!=nil {for item,i in value.reference.items {if i>0 {append(output,',')};native_js_json_write(js,output,item,depth+1)}};append(output,']')
+        append(output,'[');if value.reference!=nil {for item,i in value.reference.items {if js.error!="" {break};if i>0 {append(output,',')};native_js_json_write(js,output,item,depth+1)}};append(output,']')
     case .Object:
         append(output,'{');count:=0
-        if value.reference!=nil {for key,item in value.reference.properties {if count>0 {append(output,',')};native_js_json_write(js,output,native_js_string(js,key),depth+1);append(output,':');native_js_json_write(js,output,item,depth+1);count+=1}}
+        if value.reference!=nil {for key,item in value.reference.properties {if js.error!="" {break};if count>0 {append(output,',')};native_js_json_write(js,output,native_js_string(js,key),depth+1);append(output,':');native_js_json_write(js,output,item,depth+1);count+=1}}
         append(output,'}')
     case:append(output,"null")
     }
@@ -1138,4 +1154,21 @@ native_js_unhandled :: proc(js:^Native_JS,completion:Native_JS_Completion) {
         if detail.kind!=.Undefined {message=native_js_text(js,detail);if name.kind!=.Undefined {message=fmt.tprintf("%s: %s",native_js_text(js,name),message)}}
     }
     native_js_fail(js,fmt.tprintf("Uncaught JavaScript exception: %s",message))
+}
+
+// Exercise hostile object graphs through the same entry point used by documents.
+native_js_safety_selfcheck :: proc()->bool {
+    js:Native_JS;native_js_init(&js,{});defer native_js_destroy(&js)
+    _,error:=native_js_evaluate(&js,`var cycle=[];cycle.push(cycle);var converted=String(cycle);var shared=[1];var repeated=String([shared,shared]);`)
+    if error!=""||native_js_lookup(&js,js.globals,"converted").text!=""||native_js_lookup(&js,js.globals,"repeated").text!="1,1" {fmt.eprintln("JavaScript cyclic string conversion failed");return false}
+    _,error=native_js_evaluate(&js,`var graph=[];graph.push(graph,graph);JSON.stringify(graph);`)
+    if !strings.contains(error,"nesting limit") {fmt.eprintln("JavaScript JSON traversal bound failed");return false}
+    _,error=native_js_evaluate(&js,`var bound=function(){return 1;};for(var i=0;i<80;i++){bound=bound.bind(null);}bound();`)
+    if !strings.contains(error,"call depth") {fmt.eprintln("JavaScript bound call limit failed");return false}
+    source:=make([dynamic]u8);defer delete(source)
+    for _ in 0..<300 {append(&source,"1+")};append(&source,"1;")
+    _,error=native_js_evaluate(&js,string(source[:]))
+    if !strings.contains(error,"expression nesting") {fmt.eprintln("JavaScript expression depth bound failed");return false}
+    _,error=native_js_evaluate(&js,`var recovered=1+2;`)
+    return error==""&&native_js_lookup(&js,js.globals,"recovered").number==3
 }

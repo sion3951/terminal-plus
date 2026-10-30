@@ -513,7 +513,9 @@ history_worker :: proc(worker:^thread.Thread) {
         sync.mutex_lock(&h.mutex)
         read_ready:=h.read_pending&&h.request_start+h.request_count<=written
         need_open:=(data_fd<0||index_fd<0)&&(h.restoring||len(h.queue)>0||h.clear_pending)
-        for !h.stopping&&!h.closing&&!h.clear_pending&&(h.error_len>0||h.restoring||len(h.queue)==0)&&!read_ready&&!(need_open&&h.error_len==0) {
+        // A failed clear/open must sleep too: clear_pending stays set until
+        // the operation succeeds, and otherwise bypassed the wait forever.
+        for !h.stopping&&!h.closing&&(h.error_len>0||(!h.clear_pending&&(h.restoring||len(h.queue)==0)&&!read_ready&&!need_open)) {
             sync.cond_wait(&h.cond,&h.mutex)
             read_ready=h.read_pending&&h.request_start+h.request_count<=written
             need_open=(data_fd<0||index_fd<0)&&(h.restoring||len(h.queue)>0||h.clear_pending)

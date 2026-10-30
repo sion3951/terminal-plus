@@ -234,14 +234,15 @@ app_instance_stop :: proc() {
 }
 
 // Call after closing the windows and flushing the manifest. Only this
-// configuration's owned socket and lock are removed.
+// configuration's owned socket is removed. Keep the lock inode stable: a
+// concurrent launcher may already have opened it while waiting to acquire it.
+// Unlinking it would let another launcher lock a different inode at this path.
 app_instance_destroy :: proc() {
     app_instance_stop()
     state:=&app_instance_state
     for fd in state.wake {if fd>=0 {posix.close(fd)}}
     for &request in state.requests {app_instance_request_destroy(&request)}
     delete(state.requests)
-    if state.owns_lock {os.remove(state.lock_path)}
     if state.lock>=0 {posix.close(state.lock)}
     delete(state.socket_path);delete(state.lock_path)
     state^=App_Instance_State{listener=-1,lock=-1,wake={-1,-1}}

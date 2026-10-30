@@ -121,14 +121,13 @@ tab_rename_render_box :: proc(a:^App,tab:^Tab,x,y,width,height:f32,group_id:u64)
     e:=&a.tab_rename
     if e.group_id!=group_id||e.tab==nil {return false}
     if group_id==0&&e.tab!=tab {return false}
-    available:=max(1,width-44)
-    top:=y+max(1,(height-30)/2)
-    ui_rect(a,x+7,top,width-36,30,ACCENT)
-    ui_rect(a,x+8,top+1,width-38,28,BG)
-    start:=explorer_input_start(a,e.input[:e.used],e.cursor,14,available)
-    text_edit_selection_render(a,e.input[:e.used],start,e.cursor,e.anchor,e.selecting,e.select_all,x+12,top+3,14,available,24)
-    ui_fit_text(a,string(e.input[start:e.used]),x+12,top+7,14,available,TEXT)
-    caret:=renderer_text_width(&a.renderer,string(e.input[start:e.cursor]),14*a.scale)/a.scale
-    ui_rect(a,x+12+min(caret,available),top+4,1,22,TEXT)
+    available:=max(1,width-48)
+    top:=y+max(1,(height-28)/2)
+    ui_field(a,x+6,top,width-36,28,true,false)
+    start:=explorer_input_start(a,e.input[:e.used],e.cursor,13,available)
+    text_edit_selection_render(a,e.input[:e.used],start,e.cursor,e.anchor,e.selecting,e.select_all,x+14,top+3,13,available,22)
+    ui_text_mid(a,string(e.input[start:e.used]),x+14,top+14,13,available,TEXT)
+    caret:=renderer_text_width(&a.renderer,string(e.input[start:e.cursor]),13*a.scale)/a.scale
+    ui_caret(a,x+14+min(caret,available),top+5,18)
     return true
 }

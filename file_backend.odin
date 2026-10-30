@@ -183,12 +183,14 @@ file_local_request :: proc(b:^File_Browser,generation:u64,path:string,result:^Fi
     if resolved==nil {file_set_error(result,fmt.tprintf("Cannot access path: %v",posix.errno()));return}
     delete(result.path);result.path=strings.clone(string(resolved));file_cfree(rawptr(resolved))
     if result.kind==.Preview {
-        info,error:=os.stat(result.path,context.temp_allocator)
-        if error!=nil {file_set_error(result,fmt.tprintf("Cannot read file: %v",error));return}
-        if info.type!=.Regular {file_set_error(result,"Preview supports regular files only.");return}
-        file,open_error:=os.open(result.path)
+        // Validate the opened descriptor: a path can be replaced after stat.
+        // Nonblocking open also prevents a substituted FIFO hanging shutdown.
+        file,open_error:=os.open(result.path,{.Read,.Non_Blocking})
         if open_error!=nil {file_set_error(result,fmt.tprintf("Cannot open file: %v",open_error));return}
         defer os.close(file)
+        info,error:=os.fstat(file,context.temp_allocator)
+        if error!=nil {file_set_error(result,fmt.tprintf("Cannot read file: %v",error));return}
+        if info.type!=.Regular {file_set_error(result,"Preview supports regular files only.");return}
         data:=make([]u8,min(int(max(info.size,0)),FILE_PREVIEW_LIMIT)+1)
         used:=0
         for used<len(data)&&!file_request_cancelled(b,generation) {

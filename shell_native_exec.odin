@@ -48,6 +48,19 @@ native_shell_fork_loop_scope :: proc(shell:^Native_Shell) {
     if native_shell_compat_level(shell)>44 {shell.compat.loop_depth=0;shell.compat.break_depth=0;shell.compat.continue_depth=0}
 }
 
+// Keep internal pipes out of the standard streams even when the caller has
+// explicitly closed one. Child dup2/close sequences must not alias fd 0..2.
+native_shell_pipe :: proc(descriptors:^[2]posix.FD)->bool {
+    if pty_pipe2(descriptors,c.int(posix.O_CLOEXEC))!=0 {return false}
+    for &fd in descriptors^ {
+        if fd>2 {continue}
+        replacement:=posix.fcntl(fd,.DUPFD_CLOEXEC,c.int(3))
+        if replacement<0 {posix.close(descriptors[0]);posix.close(descriptors[1]);return false}
+        posix.close(fd);fd=posix.FD(replacement)
+    }
+    return true
+}
+
 Native_Shell_Process_Substitution :: struct {fd:posix.FD,pid:posix.pid_t}
 native_shell_substitutions:[dynamic]Native_Shell_Process_Substitution
 
@@ -58,7 +71,7 @@ native_shell_substitutions_close :: proc(first:int) {
 
 native_shell_process_substitute :: proc(shell:^Native_Shell,source:string,input:bool)->(string,string) {
     descriptors:[2]posix.FD
-    if pty_pipe2(&descriptors,c.int(posix.O_CLOEXEC))!=0 {return "","cannot create process substitution pipe"}
+    if !native_shell_pipe(&descriptors) {return "","cannot create process substitution pipe"}
     keep,child_fd:=descriptors[0],descriptors[1]
     child_target:posix.FD=1
     if !input {keep=descriptors[1];child_fd=descriptors[0];child_target=0}
@@ -410,6 +423,7 @@ native_shell_apply_redirects :: proc(shell:^Native_Shell,redirects:[]Native_Shel
         fd:posix.FD= -1
         if redirect.operator=="<<"||redirect.operator=="<<-"||redirect.operator=="<<<" {fd=native_shell_here_fd(redirect.body)} else {
             flags:posix.O_Flags
+            verify_noclobber:=false
             switch redirect.operator {
             case "<":flags={}
             case "<>":flags={.RDWR,.CREAT}
@@ -418,13 +432,23 @@ native_shell_apply_redirects :: proc(shell:^Native_Shell,redirects:[]Native_Shel
                 if redirect.operator!=">|"&&shell.compat.options["noclobber"] {
                     info,error:=os.stat(redirect.target,context.allocator)
                     if error==nil&&info.type==.Regular {fmt.eprintf("terminal+: %s: cannot overwrite existing file\n",redirect.target);return false}
-                    if error!=nil {flags={.WRONLY,.CREAT,.EXCL}}
+                    if error!=nil {flags={.WRONLY,.CREAT,.EXCL}} else {
+                        // Do not truncate before checking the opened object:
+                        // an existing device/FIFO can be replaced after stat.
+                        flags={.WRONLY};verify_noclobber=true
+                    }
                 }
             case ">>","&>>":flags={.WRONLY,.CREAT,.APPEND}
             case:fmt.eprintf("terminal+: unsupported redirection: %s\n",redirect.operator);return false
             }
             path:=strings.clone_to_cstring(redirect.target)
             fd=posix.open(path,flags,{.IRUSR,.IWUSR,.IRGRP,.IWGRP,.IROTH,.IWOTH})
+            if fd>=0&&verify_noclobber {
+                info:posix.stat_t
+                if posix.fstat(fd,&info)!=.OK||posix.S_ISREG(info.st_mode) {
+                    posix.close(fd);fmt.eprintf("terminal+: %s: cannot overwrite existing file\n",redirect.target);return false
+                }
+            }
         }
         if fd<0 {fmt.eprintf("terminal+: cannot open %s: %v\n",redirect.target,posix.errno());return false}
         if fd!=descriptor {
@@ -1366,7 +1390,7 @@ native_shell_pipeline_prepared :: proc(shell:^Native_Shell,pipeline:Native_Shell
     // The gate prevents children from reading the tty before the complete
     // pipeline has acquired its foreground process group.
     gate:[2]posix.FD
-    if pty_pipe2(&gate,c.int(posix.O_CLOEXEC))!=0 {fmt.eprintln("terminal+: cannot create process gate");return 1}
+    if !native_shell_pipe(&gate) {fmt.eprintln("terminal+: cannot create process gate");return 1}
     pipes:=make([][2]posix.FD,max(0,len(prepared)-1))
     opened:=0
     defer {
@@ -1374,7 +1398,7 @@ native_shell_pipeline_prepared :: proc(shell:^Native_Shell,pipeline:Native_Shell
         for pair in pipes[:opened] {posix.close(pair[0]);posix.close(pair[1])}
     }
     for &pair in pipes {
-        if pty_pipe2(&pair,c.int(posix.O_CLOEXEC))!=0 {fmt.eprintln("terminal+: cannot create pipeline");return 1}
+        if !native_shell_pipe(&pair) {fmt.eprintln("terminal+: cannot create pipeline");return 1}
         opened+=1
     }
     pids:=make([dynamic]posix.pid_t)
@@ -1645,7 +1669,7 @@ native_shell_execute :: proc(shell:^Native_Shell,source:string,syntax_error:^boo
 native_shell_capture :: proc(shell:^Native_Shell,source:string)->(string,string) {
     native_shell_capture_sequence+=1
     output:[2]posix.FD
-    if pty_pipe2(&output,c.int(posix.O_CLOEXEC))!=0 {return "","cannot create command substitution pipe"}
+    if !native_shell_pipe(&output) {return "","cannot create command substitution pipe"}
     // Substitutions execute while the shell still owns the foreground tty.
     // Catch Ctrl+C here instead of allowing an ignored prompt signal to hang.
     atomic.atomic_store(&native_shell_capture_interrupted,0)
@@ -1662,7 +1686,7 @@ native_shell_capture :: proc(shell:^Native_Shell,source:string)->(string,string)
         shell.compat.subshell_depth+=1
         native_shell_fork_loop_scope(shell)
         _=posix.setpgid(0,0);native_shell_nested_group=posix.getpid()
-        posix.close(output[0]);posix.dup2(output[1],1);posix.close(output[1])
+        posix.close(output[0]);if posix.dup2(output[1],1)<0 {posix._exit(1)};posix.close(output[1])
         for substitution in native_shell_substitutions {posix.close(substitution.fd)}
         native_shell_substitutions=nil
         native_shell_child_signals(shell)
@@ -1689,6 +1713,12 @@ native_shell_capture :: proc(shell:^Native_Shell,source:string)->(string,string)
         if native_shell_cancelled()||atomic.atomic_load(&native_shell_capture_interrupted)!=0 {
             interrupted=true;_=posix.kill(-pid,.SIGHUP);break
         }
+        // A signal may arrive after the cancellation check. Poll with a
+        // bounded timeout so that race cannot leave the shell blocked in read.
+        ready:=posix.pollfd{fd=output[0],events={.IN}}
+        polled:=posix.poll(&ready,1,50)
+        if polled==0 {continue}
+        if polled<0 {if posix.errno()==.EINTR {continue};break}
         amount:=posix.read(output[0],raw_data(buffer[:]),len(buffer))
         if amount<0 {if posix.errno()==.EINTR {continue};break}
         if amount==0 {break}
@@ -1737,8 +1767,8 @@ native_shell_capture :: proc(shell:^Native_Shell,source:string)->(string,string)
 
 native_shell_coproc :: proc(shell:^Native_Shell,compound:^Native_Shell_Compound)->int {
     input,output:[2]posix.FD
-    if pty_pipe2(&input,c.int(posix.O_CLOEXEC))!=0 {fmt.eprintln("coproc: cannot create input pipe");return 1}
-    if pty_pipe2(&output,c.int(posix.O_CLOEXEC))!=0 {posix.close(input[0]);posix.close(input[1]);fmt.eprintln("coproc: cannot create output pipe");return 1}
+    if !native_shell_pipe(&input) {fmt.eprintln("coproc: cannot create input pipe");return 1}
+    if !native_shell_pipe(&output) {posix.close(input[0]);posix.close(input[1]);fmt.eprintln("coproc: cannot create output pipe");return 1}
     pid:=posix.fork()
     if pid<0 {for fd in ([4]posix.FD{input[0],input[1],output[0],output[1]}) {posix.close(fd)};fmt.eprintln("coproc: cannot fork");return 1}
     if pid==0 {

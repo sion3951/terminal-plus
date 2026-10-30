@@ -102,7 +102,8 @@ updater_init :: proc(a:^App,automatic:bool=true) {
     base,err:=os.user_cache_dir(context.temp_allocator)
     if err!=nil {u.state=.Error;updater_message(u,"Could not find the update cache directory.");return}
     u.directory=strings.clone(fmt.tprintf("%s/terminal-plus/updates",base))
-    if os.mkdir_all(u.directory,{.Read_User,.Write_User,.Execute_User})!=nil||!updater_private_path(u.directory,true) {
+    directory_error:=os.mkdir_all(u.directory,{.Read_User,.Write_User,.Execute_User})
+    if (directory_error!=nil&&directory_error!=.Exist)||!updater_private_path(u.directory,true) {
         delete(u.directory);u.directory="";u.state=.Error
         updater_message(u,"Could not create the private update cache directory.");return
     }

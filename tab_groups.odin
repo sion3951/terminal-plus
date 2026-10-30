@@ -8,6 +8,11 @@ import glfw "vendor:glfw"
 
 Tab_Drop_Mode :: enum {Insert,Group,List}
 GROUP_ROW_HEIGHT :: 32
+// The hit box starts at the header edge so hover never crosses a gap; the
+// glass surface floats GROUP_POPUP_GAP below it and rows sit inside padding.
+GROUP_POPUP_GAP :: 5
+GROUP_ROWS_TOP :: 10
+GROUP_ROWS_BOTTOM :: 5
 Tab_Group_Ref :: struct {id:u64,label:string}
 Group_Menu_State :: struct {id:u64,scroll:int}
 Group_Popup :: struct {
@@ -112,7 +117,7 @@ tab_group_open_to :: proc(a:^App,id:u64) {
     height:=f32(a.renderer.height)/a.scale
     for i in 0..<level {
         children:=tab_group_children(a,a.group_menus[i].id)
-        rows:=max(1,min(children.count,int((height-HEADER-12)/GROUP_ROW_HEIGHT)))
+        rows:=max(1,min(children.count,int((height-HEADER-GROUP_ROWS_TOP-GROUP_ROWS_BOTTOM)/GROUP_ROW_HEIGHT)))
         for row in 0..<children.count {
             if children.groups[row]!=a.group_menus[i+1].id {continue}
             if row<a.group_menus[i].scroll {a.group_menus[i].scroll=row}
@@ -165,8 +170,8 @@ tab_group_popup :: proc(a:^App,depth:int=0)->Group_Popup {
     for level in 0..=depth {
         state:=&a.group_menus[level];box:=tab_group_children(a,state.id)
         if box.count==0 {return {}}
-        box.depth=level;box.rows=max(1,min(box.count,int((height-HEADER-12)/GROUP_ROW_HEIGHT)))
-        box.w=min(300,width-16);box.h=f32(box.rows)*GROUP_ROW_HEIGHT+12;box.y=HEADER-1
+        box.depth=level;box.rows=max(1,min(box.count,int((height-HEADER-GROUP_ROWS_TOP-GROUP_ROWS_BOTTOM)/GROUP_ROW_HEIGHT)))
+        box.w=min(300,width-16);box.h=f32(box.rows)*GROUP_ROW_HEIGHT+GROUP_ROWS_TOP+GROUP_ROWS_BOTTOM;box.y=HEADER-1
         state.scroll=clamp(state.scroll,0,max(0,box.count-box.rows))
         if level==0 {
             first:=tab_group_first(a,state.id);if first<0 {return {}}
@@ -193,8 +198,8 @@ tab_group_hit :: proc(a:^App,x,y:f32)->(box:Group_Popup,row,index:int,group:u64)
     for depth:=len(a.group_menus)-1;depth>=0;depth-=1 {
         next:=tab_group_popup(a,depth)
         if !tab_group_popup_contains(next,x,y) {continue}
-        if y<next.y+6||y>=next.y+next.h-6 {return next,-1,-1,0}
-        row=a.group_menus[depth].scroll+int((y-next.y-6)/GROUP_ROW_HEIGHT)
+        if y<next.y+GROUP_ROWS_TOP||y>=next.y+next.h-GROUP_ROWS_BOTTOM {return next,-1,-1,0}
+        row=a.group_menus[depth].scroll+int((y-next.y-GROUP_ROWS_TOP)/GROUP_ROW_HEIGHT)
         if row>=next.count {return next,-1,-1,0}
         return next,row,next.items[row],next.groups[row]
     }
@@ -261,35 +266,39 @@ tab_group_render :: proc(a:^App) {
     for depth in 0..<len(a.group_menus) {
         box:=tab_group_popup(a,depth);if !box.valid {break}
         scroll:=a.group_menus[depth].scroll
-        ui_rect(a,box.x+3,box.y+4,box.w,box.h,Color{0,0,0,0.6})
-        ui_rect(a,box.x-1,box.y,box.w+2,box.h+1,LINE);ui_rect(a,box.x,box.y,box.w,box.h,PANEL)
+        ui_glass(a,box.x+2,box.y+GROUP_POPUP_GAP,box.w-4,box.h-GROUP_POPUP_GAP,10)
         for row in 0..<box.rows {
             item:=row+scroll;index:=box.items[item];tab:=a.tabs[index];group:=box.groups[item]
-            y:=box.y+6+f32(row)*GROUP_ROW_HEIGHT
+            y:=box.y+GROUP_ROWS_TOP+f32(row)*GROUP_ROW_HEIGHT
             hover:=f32(mx)>=box.x&&f32(mx)<box.x+box.w&&f32(my)>=y&&f32(my)<y+GROUP_ROW_HEIGHT
             selected:=index==a.active||(group!=0&&tab_group_level(active_tab(a),group)>=0)
-            if selected {ui_rect(a,box.x+3,y,box.w-6,GROUP_ROW_HEIGHT,SELECTION)}
-            else if hover {ui_rect(a,box.x+3,y,box.w-6,GROUP_ROW_HEIGHT,HOVER)}
+            ui_row(a,box.x+6,y+1,box.w-12,GROUP_ROW_HEIGHT-2,selected,hover)
             title:=tab_title(tab);if group!=0 {title=tab_group_name(tab,group)}
-            if !tab_rename_render_box(a,tab,box.x,y,box.w,GROUP_ROW_HEIGHT,group) {ui_fit_text(a,title,box.x+12,y+10,14,box.w-44,TEXT)}
-            if group!=0 {ui_text(a,"›",box.x+box.w-24,y+8,18,MUTED)} else {ui_text(a,"×",box.x+box.w-23,y+10,14,MUTED)}
+            if !tab_rename_render_box(a,tab,box.x,y,box.w,GROUP_ROW_HEIGHT,group) {ui_text_mid(a,title,box.x+16,y+GROUP_ROW_HEIGHT/2,13,box.w-50,TEXT if selected||hover else SOFT)}
+            cx:=box.x+box.w-20;cy:=y+GROUP_ROW_HEIGHT/2
+            if group!=0 {ui_icon_chevron(a,cx,cy,9,MUTED,0)}
+            else if hover||selected {
+                over:=hover&&f32(mx)>=box.x+box.w-30
+                if over {ui_round(a,cx-10,cy-10,20,20,6,Color{1,1,1,0.08})}
+                ui_icon_close(a,cx,cy,6,TEXT if over else MUTED)
+            }
         }
         if box.count>box.rows {
             track:=f32(box.rows)*GROUP_ROW_HEIGHT;thumb:=max(16,track*f32(box.rows)/f32(box.count))
-            ui_rect(a,box.x+box.w-3,box.y+6+(track-thumb)*f32(scroll)/f32(box.count-box.rows),2,thumb,MUTED)
+            ui_scrollbar(a,box.x+box.w-8,box.y+GROUP_ROWS_TOP+(track-thumb)*f32(scroll)/f32(box.count-box.rows),thumb)
         }
         if tab_drag.dragging&&tab_drag.target==a&&tab_drag.list_depth==depth&&tab_drag.drop_mode==.List {
             row:=box.count
             for i in 0..<box.count {if box.items[i]>=tab_drag.insertion {row=i;break}}
-            y:=clamp(box.y+6+f32(row-scroll)*GROUP_ROW_HEIGHT,box.y+6,box.y+box.h-6)
-            ui_rect(a,box.x+5,y-1,box.w-10,2,ACCENT)
+            y:=clamp(box.y+GROUP_ROWS_TOP+f32(row-scroll)*GROUP_ROW_HEIGHT,box.y+GROUP_ROWS_TOP,box.y+box.h-GROUP_ROWS_BOTTOM)
+            ui_round(a,box.x+10,y-1,box.w-20,2,1,ACCENT)
         }
         if tab_drag.dragging&&tab_drag.target==a&&tab_drag.list_depth==depth&&tab_drag.drop_mode==.Group&&tab_drag.target_y>=f64(HEADER) {
             for row in 0..<box.rows {
                 item:=row+scroll
                 if a.tabs[box.items[item]]!=tab_drag.onto||box.groups[item]!=tab_drag.onto_group {continue}
-                x:=box.x+box.w/2-12;y:=box.y+6+f32(row)*GROUP_ROW_HEIGHT+4
-                ui_rect(a,x,y,24,24,ACCENT);ui_rect(a,x+1,y+1,22,22,BG);ui_text(a,"+",x+7,y+4,18,ACCENT)
+                y:=box.y+GROUP_ROWS_TOP+f32(row)*GROUP_ROW_HEIGHT
+                tab_drag_group_target(a,box.x+6,y+1,box.w-12,GROUP_ROW_HEIGHT-2)
             }
         }
     }

@@ -63,7 +63,7 @@ tab_drag_update_target :: proc(sx,sy:f64,occupied:^App) {
                 if before<box.count {tab_drag.insertion=box.items[before]}
                 else {tab_drag.insertion=tab_group_end(occupied,tab_group_first(occupied,box.group),box.group)}
                 if row>=0&&item>=0 {
-                    top:=box.y+6+f32(row-scroll)*GROUP_ROW_HEIGHT
+                    top:=box.y+GROUP_ROWS_TOP+f32(row-scroll)*GROUP_ROW_HEIGHT
                     own:=occupied==tab_drag.source&&((tab_drag.group_id==0&&item_group==0&&occupied.tabs[item]==tab_drag.tab)||(tab_drag.group_id!=0&&item_group==tab_drag.group_id))
                     if !own&&f32(local_y)>=top+GROUP_ROW_HEIGHT*0.25&&f32(local_y)<top+GROUP_ROW_HEIGHT*0.75&&f32(local_x)>=box.x+box.w*0.25&&f32(local_x)<box.x+box.w*0.75 {
                         tab_drag.drop_mode=.Group;tab_drag.onto=occupied.tabs[item];tab_drag.onto_group=item_group
@@ -159,6 +159,14 @@ tab_drag_wait_delay :: proc()->f64 {
     return 60
 }
 
+// Grouping target: a dashed-feel outline with a plus badge in the middle.
+tab_drag_group_target :: proc(a:^App,x,y,w,h:f32) {
+    ui_round(a,x,y,w,h,RADIUS_CONTROL,Color{1,1,1,0.06})
+    ui_round_border(a,x,y,w,h,RADIUS_CONTROL,Color{1,1,1,0.35})
+    cx,cy:=x+w/2,y+h/2
+    ui_round(a,cx-11,cy-11,22,22,11,ACCENT)
+    ui_icon_plus(a,cx,cy,9,BG)
+}
 tab_drag_render :: proc(a:^App) {
     if !tab_drag.dragging {return}
     bar:=tab_bar_layout(a)
@@ -166,22 +174,17 @@ tab_drag_render :: proc(a:^App) {
         slot:=tab_bar_slot(a,bar,tab_drag.tab)
         if slot>=bar.first&&slot<bar.first+bar.visible {
             left:=bar.start+f32(slot-bar.first)*bar.tab_width
-            ui_rect(a,left+3,4,bar.tab_width-6,1,ACCENT)
-            ui_rect(a,left+3,HEADER-5,bar.tab_width-6,1,ACCENT)
+            ui_round_border(a,left+2,TAB_PILL_Y,bar.tab_width-4,TAB_PILL_H,RADIUS_CONTROL,Color{1,1,1,0.30})
         }
     }
     if a==tab_drag.target&&tab_drag.drop_mode==.Group&&tab_drag.onto!=nil&&tab_drag.target_y<f64(HEADER) {
         slot:=tab_bar_slot(a,bar,tab_drag.onto)
         left:=bar.start+f32(slot-bar.first)*bar.tab_width
-        x:=left+bar.tab_width/2-14
-        ui_rect(a,x,10,28,28,ACCENT);ui_rect(a,x+1,11,26,26,BG)
-        ui_text(a,"+",x+8,15,20,ACCENT)
+        tab_drag_group_target(a,left+2,TAB_PILL_Y,bar.tab_width-4,TAB_PILL_H)
     } else if a==tab_drag.target&&tab_drag.drop_mode==.Insert {
         slot:=bar.count
         for i in 0..<bar.count {if bar.items[i]>=tab_drag.insertion {slot=i;break}}
         marker:=clamp(bar.start+f32(slot-bar.first)*bar.tab_width,bar.start,bar.start+f32(bar.visible)*bar.tab_width)
-        ui_rect(a,marker-1,7,3,HEADER-14,ACCENT)
-        ui_rect(a,marker-5,6,11,2,ACCENT)
-        ui_rect(a,marker-5,HEADER-8,11,2,ACCENT)
+        ui_round(a,marker-1.5,TAB_PILL_Y+2,3,TAB_PILL_H-4,1.5,ACCENT)
     }
 }

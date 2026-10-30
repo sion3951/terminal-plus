@@ -30,12 +30,17 @@ ssh_discovery_join :: proc(parts: []string) -> string {
 
 ssh_discovery_read :: proc(path: string, state: ^SSH_Discovery_State) -> string {
     if state.files >= 256 || state.bytes >= 16*1024*1024 { return "" }
-    info, stat_err := os.stat(path, context.temp_allocator)
-    if stat_err != nil || info.type != .Regular || info.size < 0 || info.size > 4*1024*1024 || int(info.size)+state.bytes > 16*1024*1024 { return "" }
-    file, err := os.open(path)
+    // Inspect the opened file, not the path before opening: an Include can be
+    // replaced with a FIFO between stat and open and otherwise freeze the UI.
+    // Keep following symlinks, which are valid SSH configuration files.
+    state.files += 1
+    file, err := os.open(path, {.Read, .Non_Blocking})
     if err != nil { return "" }
     defer os.close(file)
-    state.files += 1
+    info, stat_err := os.fstat(file, context.temp_allocator)
+    if stat_err != nil || info.type != .Regular || info.size < 0 || info.size > 4*1024*1024 || int(info.size)+state.bytes > 16*1024*1024 { return "" }
+    // Charge the allocation even if a concurrent truncation shortens the read.
+    state.bytes += int(info.size)
     buffer := make([]u8, int(info.size), context.temp_allocator)
     used := 0
     for used < len(buffer) {
@@ -44,7 +49,6 @@ ssh_discovery_read :: proc(path: string, state: ^SSH_Discovery_State) -> string 
         used += n
         if read_err != nil { break }
     }
-    state.bytes += used
     return string(buffer[:used])
 }
 
@@ -115,7 +119,7 @@ ssh_discovery_include_path :: proc(state: ^SSH_Discovery_State, pattern: string)
 }
 
 ssh_discovery_config :: proc(state: ^SSH_Discovery_State, path: string, depth: int) {
-    if depth >= 16 || len(state.records) >= 65536 { return }
+    if depth >= 16 || len(state.records) >= 65536 || state.files >= 256 || state.bytes >= 16*1024*1024 { return }
     clean, _ := filepath.clean(path, context.temp_allocator)
     for current in state.stack { if current == clean { return } }
     append(&state.stack, clean)

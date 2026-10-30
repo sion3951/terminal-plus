@@ -12,18 +12,28 @@ import "core:unicode/utf8"
 import glfw "vendor:glfw"
 
 Color :: [4]f32
-// Neutral background and text match T3 Code.
+// Neutral layers follow T3 Code's dark theme; hairlines follow task_master.
+// Text steps keep high contrast without pure white glare.
 BG :: Color{10.0/255,10.0/255,10.0/255,1}
-PANEL :: Color{0.040,0.040,0.040,1}
-LINE :: Color{0.13,0.13,0.13,1}
+PANEL :: Color{0.055,0.055,0.055,1}
+LINE :: Color{0.125,0.125,0.125,1}
 HOVER :: Color{0.08,0.08,0.08,1}
-SELECTION :: Color{0.22,0.22,0.22,1}
-TEXT :: Color{155.0/255,155.0/255,155.0/255,1}
-MUTED :: Color{0.49,0.49,0.49,1}
-SOFT :: Color{0.74,0.74,0.74,1}
-ACCENT :: TEXT
+SELECTION :: Color{0.20,0.23,0.30,1}
+TEXT :: Color{0.89,0.89,0.89,1}
+SOFT :: Color{0.70,0.70,0.70,1}
+MUTED :: Color{0.52,0.52,0.52,1}
+FAINT :: Color{0.34,0.34,0.34,1}
+ACCENT :: Color{0.93,0.93,0.95,1}
+CARET :: Color{0.93,0.93,0.95,1}
+PRIMARY :: Color{0.204,0.42,0.945,1}
+FOCUS_RING :: Color{0.204,0.42,0.945,0.45}
+ROW_HOVER :: Color{1,1,1,0.05}
+ROW_SELECTED :: Color{1,1,1,0.11}
+DANGER :: Color{0.96,0.42,0.42,1}
 GREEN :: Color{0.43,0.83,0.64,1}
 TAB_WIDTH :: 210
+TAB_PILL_Y :: 7
+TAB_PILL_H :: 34
 TAB_BAR_START :: 8
 HEADER :: 48
 PAD :: 18
@@ -566,52 +576,67 @@ focus_callback :: proc "c" (w:glfw.WindowHandle,focused:c.int) {
     if a.focused {workspace_focused=a;if workspace_save_allowed {session_touch(a)}}
 }
 
-ui_rect :: proc(a:^App,x,y,w,h:f32,color:Color) {renderer_rect(&a.vertices,x*a.scale,y*a.scale,w*a.scale,h*a.scale,color)}
-ui_text :: proc(a:^App,text:string,x,y,size:f32,color:Color) {renderer_text(&a.renderer,&a.vertices,text,x*a.scale,y*a.scale,size*a.scale,color)}
+ui_rect :: proc(a:^App,x,y,w,h:f32,color:Color) {
+    if w<=0||h<=0 {return}
+    px,py,pw,ph:=ui_snap(a,x,y,w,h)
+    renderer_rect(&a.vertices,px,py,pw,ph,color)
+}
+ui_text :: proc(a:^App,text:string,x,y,size:f32,color:Color,kind:Font_Kind=.UI) {renderer_text(&a.renderer,&a.vertices,text,x*a.scale,y*a.scale,size*a.scale,color,kind=kind)}
 app_render :: proc(a:^App) {
     clear(&a.vertices)
     a.renderer.page_source=nil
     r:=&a.renderer;tab:=active_tab(a);if tab==nil {return}
     width:=f32(r.width)/a.scale;height:=f32(r.height)/a.scale
     ui_rect(a,0,0,width,height,BG)
-    ui_rect(a,0,0,width,HEADER,PANEL)
     ui_rect(a,0,HEADER-1,width,1,LINE)
     bar:=tab_bar_layout(a)
     mouse_x,mouse_y:=glfw.GetCursorPos(r.window)
     hovered:= -1
     if mouse_y>=0&&mouse_y<HEADER {hovered=tab_bar_hit(bar,f32(mouse_x))}
+    // Tabs are quiet text until hovered; the active tab sits on a glass pill.
+    previous_lit:=true
     for slot:=bar.first;slot<bar.first+bar.visible;slot+=1 {
         i:=bar.items[slot];other:=a.tabs[i];x:=bar.start+f32(slot-bar.first)*bar.tab_width
         group_id:=bar.groups[slot];group:=group_id!=0
         selected:=i==a.active||(group&&tab_group_level(tab,group_id)>=0)
-        if selected {ui_rect(a,x,0,bar.tab_width,HEADER-1,BG);ui_rect(a,x,HEADER-2,bar.tab_width,2,ACCENT)}
-        else if i==hovered {ui_rect(a,x,0,bar.tab_width,HEADER-1,HOVER)}
+        hover:=i==hovered
+        px,pw:=x+2,bar.tab_width-4
+        if selected {
+            ui_shadow(a,px,TAB_PILL_Y,pw,TAB_PILL_H,RADIUS_CONTROL,6,2,Color{0,0,0,0.45})
+            ui_round_gradient(a,px,TAB_PILL_Y,pw,TAB_PILL_H,RADIUS_CONTROL,Color{1,1,1,0.085},Color{1,1,1,0.055})
+            ui_round_border(a,px,TAB_PILL_Y,pw,TAB_PILL_H,RADIUS_CONTROL,Color{1,1,1,0.13},Color{1,1,1,0.04})
+        } else if hover {ui_round(a,px,TAB_PILL_Y,pw,TAB_PILL_H,RADIUS_CONTROL,ROW_HOVER)}
+        lit:=selected||hover
+        if !lit&&!previous_lit {ui_rect(a,x,17,1,14,LINE)}
+        previous_lit=lit
         unread:=other.unread
         if group {for member in a.tabs {if tab_group_level(member,group_id)>=0&&member.unread {unread=true}}}
-        title_color:=SOFT;if selected||i==hovered||unread {title_color=TEXT}
+        title_color:=SOFT;if lit||unread {title_color=TEXT}
         if group {
-            if !tab_rename_render_box(a,other,x,0,bar.tab_width,HEADER,group_id) {ui_fit_text(a,tab_group_name(other,group_id),x+12,16,14,bar.tab_width-52,title_color)}
-            ui_text(a,fmt.tprintf("%d",tab_group_count(a,group_id)),x+bar.tab_width-29,17,12,MUTED)
+            count:=fmt.tprintf("%d",tab_group_count(a,group_id))
+            count_w:=renderer_text_width(r,count,11*a.scale)/a.scale+12
+            if !tab_rename_render_box(a,other,x,0,bar.tab_width,HEADER,group_id) {ui_text_mid(a,tab_group_name(other,group_id),x+14,HEADER/2,13,bar.tab_width-count_w-34,title_color)}
+            _=ui_badge(a,count,x+bar.tab_width-count_w-12,HEADER/2-9.5,SOFT if lit else MUTED)
         } else {
-            if !tab_rename_render(a,other,x,bar.tab_width) {ui_fit_text(a,tab_title(other),x+12,16,14,bar.tab_width-44,title_color)}
-            close_color:=MUTED
-            if i==hovered&&f32(mouse_x)>=x+bar.tab_width-30 {close_color=TEXT}
-            if selected||i==hovered {ui_text(a,"×",x+bar.tab_width-23,16,14,close_color)}
+            if !tab_rename_render(a,other,x,bar.tab_width) {ui_text_mid(a,tab_title(other),x+14,HEADER/2,13,bar.tab_width-50,title_color)}
+            cx:=x+bar.tab_width-18
+            if lit {
+                over:=hover&&f32(mouse_x)>=x+bar.tab_width-30
+                if over {ui_round(a,cx-10,HEADER/2-10,20,20,6,Color{1,1,1,0.08})}
+                ui_icon_close(a,cx,HEADER/2,6,TEXT if over else MUTED)
+            } else if unread {ui_dot(a,cx,HEADER/2,5,SOFT)}
         }
-        ui_rect(a,x+bar.tab_width-1,12,1,24,LINE)
     }
     if bar.overflow {
-        previous_color,next_color:=MUTED,MUTED
-        if a.active>0 {previous_color=TEXT}
-        if a.active<len(a.tabs)-1 {next_color=TEXT}
-        ui_text(a,"‹",bar.navigation_x+10,14,18,previous_color)
-        ui_text(a,"›",bar.navigation_x+42,14,18,next_color)
+        previous_color,next_color:=FAINT,FAINT
+        if a.active>0 {previous_color=SOFT}
+        if a.active<len(a.tabs)-1 {next_color=SOFT}
+        ui_icon_chevron(a,bar.navigation_x+16,HEADER/2,10,previous_color,1)
+        ui_icon_chevron(a,bar.navigation_x+48,HEADER/2,10,next_color,0)
     }
-    button_color:=PANEL
-    button_text:=TEXT
-    if a.menu.open||(f32(mouse_x)>=bar.new_x&&f32(mouse_x)<bar.new_x+32&&mouse_y>=8&&mouse_y<40) {button_color=LINE;button_text=ACCENT}
-    ui_rect(a,bar.new_x,8,32,32,button_color)
-    ui_text(a,"+",bar.new_x+10,14,20,button_text)
+    new_hover:=f32(mouse_x)>=bar.new_x&&f32(mouse_x)<bar.new_x+32&&mouse_y>=8&&mouse_y<40
+    ui_control(a,bar.new_x+1,9,30,30,.Ghost,new_hover,true,a.menu.open)
+    ui_icon_plus(a,bar.new_x+16,HEADER/2,11,TEXT if new_hover||a.menu.open else SOFT)
     tab_drag_render(a)
     if tab.media!=nil {media_view_render(a,tab.media)}
     else if a.explorer_visible {
@@ -624,12 +649,9 @@ app_render :: proc(a:^App) {
         error_message=fmt.tprintf("Scrollback storage: %s — output paused",error)
     }
     if error_message!="" {
-        x:=a.origin_x/a.scale
-        available:=max(0,width-x-12)
-        notice_width:=min(available,renderer_text_width(r,error_message,12*a.scale)/a.scale+24)
-        ui_rect(a,x,HEADER+6,notice_width,28,PANEL)
-        ui_rect(a,x,HEADER+6,2,28,Color{0.96,0.36,0.36,1})
-        ui_fit_text(a,error_message,x+10,HEADER+14,12,notice_width-20,Color{0.96,0.36,0.36,1})
+        available:=max(0,width-24)
+        notice_width:=min(available,renderer_text_width(r,error_message,12*a.scale)/a.scale+40)
+        ui_notice(a,error_message,width-notice_width-12,HEADER+10,notice_width)
     }
     tab_group_render(a)
     if a.picker.open {device_picker_render(a)}
@@ -657,13 +679,19 @@ app_render_terminal :: proc(a:^App) {
             fg,bg:=rgb(cell.fg),rgb(cell.bg)
             // Saved scrollback retains the previous theme's default colors.
             if cell.bg==0x0b0d12||cell.bg==0x000000 {bg=BG}
-            if cell.fg==0xd7dce5||cell.fg==0xededed {fg=TEXT}
+            if cell.fg==0xd7dce5||cell.fg==0xededed||cell.fg==0x9b9b9b {fg=rgb(TERMINAL_FG)}
             if cell.inverse {fg,bg=bg,fg}
             if a.selected&&y*a.cols+x>=lo&&y*a.cols+x<=hi {bg=SELECTION}
             if bg!=BG {renderer_rect(&a.vertices,px,py,a.cell_w,a.cell_h,bg)}
             if cell.width==0 {continue}
             ch:=cell.ch
             if ch==0||ch==' ' {
+                if cell.underline {renderer_rect(&a.vertices,px,py+a.cell_h-3*a.scale,a.cell_w,a.scale,fg)}
+                continue
+            }
+            if terminal_special_glyph(ch) {
+                x0:=math.round(px);x1:=math.round(px+a.cell_w*f32(max(cell.width,1)))
+                terminal_draw_special(a,ch,x0,math.round(py),x1-x0,math.round(py+a.cell_h)-math.round(py),fg)
                 if cell.underline {renderer_rect(&a.vertices,px,py+a.cell_h-3*a.scale,a.cell_w,a.scale,fg)}
                 continue
             }
@@ -713,7 +741,7 @@ app_render_terminal :: proc(a:^App) {
     if count>0 {
         track:=f32(a.rows)*a.cell_h;thumb:=max(20*a.scale,track*f32(a.rows)/f32(count+a.rows))
         position:=(track-thumb)*(1-f32(tab.scroll)/f32(count))
-        renderer_rect(&a.vertices,f32(r.width)-6*a.scale,a.origin_y+position,2*a.scale,thumb,LINE)
+        renderer_round(&a.vertices,f32(r.width)-8*a.scale,a.origin_y+position,4*a.scale,thumb,2*a.scale,Color{1,1,1,0.12},Color{1,1,1,0.12})
     }
 }
 

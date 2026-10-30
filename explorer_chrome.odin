@@ -51,7 +51,7 @@ explorer_layout :: proc(a:^App)->Explorer_Layout {
     for control in Explorer_Control {
         if c[control].y+c[control].h>box.footer_y {c[control]={}}
     }
-    c[.Copy]={edge-218,box.footer_y+12,100,32}
+    c[.Copy]={edge-236,box.footer_y+12,118,32}
     c[.Insert]={edge-108,box.footer_y+12,108,32}
     return box
 }
@@ -81,48 +81,24 @@ explorer_control_at :: proc(box:Explorer_Layout,e:^Explorer_State,x,y:f32)->Expl
     return .None
 }
 
-// All chrome uses the existing Vulkan vertex batch and the app's neutral palette.
+// All chrome uses the shared antialiased primitives from ui_style.odin.
 explorer_round_rect :: proc(a:^App,rect:Explorer_Rect,color:Color,radius:f32=5) {
-    if rect.w<=0||rect.h<=0 {return}
-    r:=min(radius,min(rect.w,rect.h)/2)
-    ui_rect(a,rect.x+r,rect.y,rect.w-2*r,rect.h,color)
-    ui_rect(a,rect.x,rect.y+r,r,rect.h-2*r,color)
-    ui_rect(a,rect.x+rect.w-r,rect.y+r,r,rect.h-2*r,color)
-    for corner in 0..<4 {
-        cx:=rect.x+r;cy:=rect.y+r
-        if corner==1||corner==2 {cx=rect.x+rect.w-r}
-        if corner>=2 {cy=rect.y+rect.h-r}
-        for step in 0..<4 {
-            angle:=f32(corner)*math.PI/2+math.PI+f32(step)*math.PI/8
-            next:=angle+math.PI/8
-            append(&a.vertices,
-                Vertex{pos={cx*a.scale,cy*a.scale},color=color},
-                Vertex{pos={(cx+math.cos(angle)*r)*a.scale,(cy+math.sin(angle)*r)*a.scale},color=color},
-                Vertex{pos={(cx+math.cos(next)*r)*a.scale,(cy+math.sin(next)*r)*a.scale},color=color})
-        }
-    }
+    ui_round(a,rect.x,rect.y,rect.w,rect.h,radius,color)
 }
 explorer_stroke :: proc(a:^App,x0,y0,x1,y1:f32,color:Color,thickness:f32=1.3) {
-    dx,dy:=x1-x0,y1-y0
-    length:=math.sqrt(dx*dx+dy*dy);if length<=0 {return}
-    nx,ny:= -dy/length*thickness/2,dx/length*thickness/2
-    p0:=Vertex{pos={(x0+nx)*a.scale,(y0+ny)*a.scale},color=color}
-    p1:=Vertex{pos={(x1+nx)*a.scale,(y1+ny)*a.scale},color=color}
-    p2:=Vertex{pos={(x1-nx)*a.scale,(y1-ny)*a.scale},color=color}
-    p3:=Vertex{pos={(x0-nx)*a.scale,(y0-ny)*a.scale},color=color}
-    append(&a.vertices,p0,p1,p2,p0,p2,p3)
+    ui_stroke(a,x0,y0,x1,y1,color,thickness)
 }
 explorer_folder_icon :: proc(a:^App,x,y:f32,color:Color,background:Color) {
-    explorer_round_rect(a,{x,y+3,18,12},color,2)
-    explorer_round_rect(a,{x,y,8,6},color,1)
-    explorer_round_rect(a,{x+1.3,y+4.3,15.4,9.4},background,1)
+    _=background
+    ui_icon(a,.Folder,x+1,y-1,color)
 }
 explorer_tile_icon :: proc(a:^App,entry:File_Entry,x,y:f32,color,surface:Color) {
     if entry.directory {
-        explorer_round_rect(a,{x,y+2,21,14},color,3)
-        explorer_round_rect(a,{x+1.5,y+3.5,18,12},surface,2)
-        explorer_round_rect(a,{x,y+10,48,32},color,4)
-        explorer_round_rect(a,{x+1.5,y+11.5,45,29},surface,3)
+        // Back plate with tab, then a lightly tinted front body.
+        ui_stroke(a,x+1,y+12,x+1,y+4.5,color,1.5);ui_stroke(a,x+1,y+4.5,x+3.5,y+2,color,1.5)
+        ui_stroke(a,x+3.5,y+2,x+16,y+2,color,1.5);ui_stroke(a,x+16,y+2,x+20.5,y+7.5,color,1.5)
+        ui_round(a,x+1,y+7.5,46,34.5,4,color*Color{1,1,1,0.10})
+        ui_round_outline(a,x+0.25,y+7.5,47.5,34.5,4.5,color,1.5)
     } else {
         left,right,top,bottom:=x+8,x+40,y,y+42
         explorer_stroke(a,left,top,right-10,top,color,1.5)
@@ -149,8 +125,9 @@ explorer_tile_icon :: proc(a:^App,entry:File_Entry,x,y:f32,color,surface:Color) 
         }
     }
     if entry.symlink {
-        explorer_round_rect(a,{x+33,y+30,17,17},surface,3)
-        ui_text(a,"↗",x+35,y+32,14,color)
+        ui_round(a,x+32,y+29,18,18,9,surface)
+        ui_round_outline(a,x+32,y+29,18,18,9,color,1.2)
+        ui_stroke(a,x+37.5,y+41.5,x+44.5,y+34.5,color);ui_stroke(a,x+39.5,y+34.5,x+44.5,y+34.5,color);ui_stroke(a,x+44.5,y+34.5,x+44.5,y+39.5,color)
     }
 }
 explorer_icon :: proc(a:^App,control:Explorer_Control,x,y:f32,color:Color) {
@@ -165,11 +142,16 @@ explorer_icon :: proc(a:^App,control:Explorer_Control,x,y:f32,color:Color) {
         explorer_stroke(a,x+7,y+14,x+7,y+9,color);explorer_stroke(a,x+7,y+9,x+10,y+9,color)
         explorer_stroke(a,x+10,y+9,x+10,y+14,color)
     case .Reload:
-        for step in 0..<12 {
-            angle:=f32(step)*math.PI/8+0.2;next:=angle+math.PI/8
-            explorer_stroke(a,x+8+math.cos(angle)*6,y+8+math.sin(angle)*6,x+8+math.cos(next)*6,y+8+math.sin(next)*6,color)
+        // Rotate-clockwise: an arc from three o'clock round to twelve, a short
+        // lead into the top-right corner, and an L-shaped arrowhead there.
+        cx,cy,r:=x+8,y+8.5,f32(5.5)
+        steps:=18
+        for step in 0..<steps {
+            angle:=f32(step)/f32(steps)*1.5*math.PI;next:=f32(step+1)/f32(steps)*1.5*math.PI
+            explorer_stroke(a,cx+math.cos(angle)*r,cy+math.sin(angle)*r,cx+math.cos(next)*r,cy+math.sin(next)*r,color,1.4)
         }
-        explorer_stroke(a,x+14,y+2,x+14,y+8,color);explorer_stroke(a,x+9,y+7,x+14,y+8,color)
+        explorer_stroke(a,cx,cy-r,cx+2.6,cy-r+0.7,color,1.4);explorer_stroke(a,cx+2.6,cy-r+0.7,cx+r,cy-r+3.1,color,1.4)
+        explorer_stroke(a,cx+r,cy-r+3.1,cx+r,cy-r-0.2,color,1.4);explorer_stroke(a,cx+r,cy-r+3.1,cx+r-3.3,cy-r+3.1,color,1.4)
     case .Search:
         for step in 0..<16 {
             angle:=f32(step)*math.PI/8;next:=angle+math.PI/8
@@ -179,8 +161,8 @@ explorer_icon :: proc(a:^App,control:Explorer_Control,x,y:f32,color:Color) {
     case .Close,.Clear_Search:
         explorer_stroke(a,x+4,y+4,x+12,y+12,color);explorer_stroke(a,x+12,y+4,x+4,y+12,color)
     case .Copy:
-        ui_rect(a,x+2,y+2,9,11,color);ui_rect(a,x+3.3,y+3.3,6.4,8.4,PANEL)
-        ui_rect(a,x+5,y+5,9,11,color);ui_rect(a,x+6.3,y+6.3,6.4,8.4,PANEL)
+        ui_stroke(a,x+2.5,y+11,x+2.5,y+3.5,color);ui_stroke(a,x+2.5,y+3.5,x+3.5,y+2.5,color);ui_stroke(a,x+3.5,y+2.5,x+10,y+2.5,color)
+        ui_round_outline(a,x+5,y+5,9.5,10.5,2,color)
     case .Insert:
         explorer_stroke(a,x+2,y+4,x+6,y+8,color);explorer_stroke(a,x+6,y+8,x+2,y+12,color)
         explorer_stroke(a,x+8,y+12,x+14,y+12,color)
@@ -191,26 +173,24 @@ explorer_icon :: proc(a:^App,control:Explorer_Control,x,y:f32,color:Color) {
     }
 }
 explorer_field :: proc(a:^App,rect:Explorer_Rect,focused:bool,hover:bool) {
-    if rect.w<=0 {return}
-    border:=LINE;if focused {border=SOFT} else if hover {border=SELECTION}
-    explorer_round_rect(a,rect,border)
-    explorer_round_rect(a,{rect.x+1,rect.y+1,rect.w-2,rect.h-2},PANEL,4)
+    ui_field(a,rect.x,rect.y,rect.w,rect.h,focused,hover)
 }
 explorer_button :: proc(a:^App,rect:Explorer_Rect,control:Explorer_Control,label:string,hover:bool,enabled:bool=true,active:bool=false) {
     if rect.w<=0 {return}
     color:=SOFT
-    if control==.Copy||control==.Insert {
-        explorer_round_rect(a,rect,LINE)
-        explorer_round_rect(a,{rect.x+1,rect.y+1,rect.w-2,rect.h-2},PANEL,4)
+    outlined:=control==.Copy||control==.Insert
+    if control==.Hidden {
+        updater_switch(a,label,rect.x+4,rect.y+1,active,hover)
+        return
     }
-    if active {explorer_round_rect(a,rect,LINE);color=TEXT}
-    else if hover&&enabled {explorer_round_rect(a,rect,HOVER);color=TEXT}
-    if !enabled {color=MUTED}
+    ui_control(a,rect.x,rect.y,rect.w,rect.h,.Outline if outlined else .Ghost,hover,enabled,active)
+    if active||(hover&&enabled) {color=TEXT}
+    if !enabled {color=FAINT}
     if label=="" {explorer_icon(a,control,rect.x+(rect.w-16)/2,rect.y+(rect.h-16)/2,color)}
     else {
         offset:f32=12
-        if control==.Copy||control==.Insert {explorer_icon(a,control,rect.x+10,rect.y+8,color);offset=32}
-        ui_fit_text(a,label,rect.x+offset,rect.y+(rect.h-12)/2,12,rect.w-offset-8,color)
+        if outlined {explorer_icon(a,control,rect.x+11,rect.y+(rect.h-16)/2,color);offset=34}
+        ui_text_mid(a,label,rect.x+offset,rect.y+rect.h/2,13,rect.w-offset-8,color)
     }
 }
 explorer_text_width :: proc(a:^App,text:string,limit:f32)->f32 {
@@ -286,15 +266,14 @@ explorer_kind_label :: proc(entry:File_Entry)->string {
 explorer_toolbar_render :: proc(a:^App,tab:^Tab,box:Explorer_Layout,hover:Explorer_Control) {
     e:=&tab.explorer;c:=box.controls
     if c[.Close].w>0 {
-        explorer_folder_icon(a,box.margin,HEADER+22,SOFT,PANEL)
-        ui_text(a,"Files",box.margin+30,HEADER+21,18,TEXT)
-        ui_rect(a,box.margin+86,HEADER+24,1,16,LINE)
+        ui_icon(a,.Folder,box.margin,HEADER+22,SOFT)
+        ui_title(a,"Files",box.margin+26,HEADER+30,16,60)
         device:="Local";if tab.remote {device=tab.device.name}
-        ui_fit_text(a,device,box.margin+100,HEADER+25,12,c[.Hidden].x-box.margin-116,MUTED)
+        ui_rect(a,box.margin+76,HEADER+23,1,14,LINE)
+        ui_text_mid(a,device,box.margin+88,HEADER+30,13,c[.Hidden].x-box.margin-104,MUTED)
     }
     explorer_button(a,c[.Close],.Close,"",hover==.Close)
-    hidden_label:="Hidden files";if e.show_hidden {hidden_label="✓ Hidden files"}
-    explorer_button(a,c[.Hidden],.Hidden,hidden_label,hover==.Hidden,true,e.show_hidden)
+    explorer_button(a,c[.Hidden],.Hidden,"Hidden files",hover==.Hidden,true,e.show_hidden)
     explorer_button(a,c[.Up],.Up,"",hover==.Up,e.loaded&&e.listing.path!="/")
     explorer_button(a,c[.Home],.Home,"",hover==.Home)
     explorer_button(a,c[.Reload],.Reload,"",hover==.Reload)
@@ -307,19 +286,19 @@ explorer_toolbar_render :: proc(a:^App,tab:^Tab,box:Explorer_Layout,hover:Explor
             text_edit_selection_render(a,e.input[:e.used],start,e.cursor,e.input_anchor,e.input_selecting,e.select_all,text_x,path.y+7,13,text_width,22)
             ui_fit_text(a,string(e.input[start:e.used]),text_x,path.y+11,13,text_width,TEXT)
             caret:=renderer_text_width(&a.renderer,string(e.input[start:e.cursor]),13*a.scale)/a.scale
-            ui_rect(a,text_x+caret,path.y+9,1,18,ACCENT)
-            ui_text(a,"↵",path.x+path.w-24,path.y+10,14,MUTED)
+            ui_caret(a,text_x+caret,path.y+9,18)
+            ui_text_mid(a,"↵",path.x+path.w-24,path.y+path.h/2,14,16,MUTED)
         } else if e.loaded&&e.listing.path!="" {
             mouse_x,mouse_y:=glfw.GetCursorPos(a.renderer.window)
             for crumb,i in explorer_breadcrumbs(a,e,path) {
                 over:=explorer_contains(crumb.rect,f32(mouse_x),f32(mouse_y))
                 color:=SOFT;if crumb.current {color=TEXT}
-                if over {explorer_round_rect(a,crumb.rect,LINE,3);color=TEXT}
-                if i>0 {ui_text(a,"›",crumb.rect.x-9,path.y+10,13,MUTED)}
-                ui_fit_text(a,crumb.label,crumb.rect.x+6,path.y+11,13,crumb.rect.w-12,color)
+                if over {ui_round(a,crumb.rect.x,crumb.rect.y,crumb.rect.w,crumb.rect.h,RADIUS_ROW,ROW_SELECTED);color=TEXT}
+                if i>0 {ui_icon_chevron(a,crumb.rect.x-6,path.y+path.h/2,7,FAINT,0)}
+                ui_text_mid(a,crumb.label,crumb.rect.x+6,path.y+path.h/2,13,crumb.rect.w-12,color)
             }
             explorer_icon(a,.Path,path.x+path.w-24,path.y+10,MUTED)
-        } else {ui_fit_text(a,"Loading folder…",text_x,path.y+11,13,text_width,MUTED)}
+        } else {ui_text_mid(a,"Loading folder…",text_x,path.y+path.h/2,13,text_width,MUTED)}
     }
     search:=c[.Search]
     explorer_field(a,search,e.search_editing,hover==.Search||hover==.Clear_Search)
@@ -332,12 +311,15 @@ explorer_toolbar_render :: proc(a:^App,tab:^Tab,box:Explorer_Layout,hover:Explor
             text_edit_selection_render(a,e.search[:],start,e.search_cursor,e.search_anchor,e.search_selecting,e.search_select_all,x,search.y+7,13,width,22)
         }
         if len(e.search)==0&&!e.search_editing {
-            ui_fit_text(a,"Search this folder",x,search.y+11,13,width,MUTED)
-            if search.w>=250 {ui_text(a,"Ctrl F",search.x+search.w-45,search.y+12,12,MUTED)}
-        } else {ui_fit_text(a,string(e.search[start:]),x,search.y+11,13,width,TEXT)}
+            ui_text_mid(a,"Search this folder",x,search.y+search.h/2,13,width,MUTED)
+            if search.w>=250 {
+                hint_w:=renderer_text_width(&a.renderer,"Ctrl+F",11*a.scale)/a.scale+12
+                _=ui_badge(a,"Ctrl+F",search.x+search.w-hint_w-8,search.y+search.h/2-9.5,MUTED)
+            }
+        } else {ui_text_mid(a,string(e.search[start:]),x,search.y+search.h/2,13,width,TEXT)}
         if e.search_editing {
             caret:=renderer_text_width(&a.renderer,string(e.search[start:e.search_cursor]),13*a.scale)/a.scale
-            ui_rect(a,x+caret,search.y+9,1,18,ACCENT)
+            ui_caret(a,x+caret,search.y+9,18)
         }
         if len(e.search)>0 {explorer_button(a,c[.Clear_Search],.Clear_Search,"",hover==.Clear_Search)}
     }

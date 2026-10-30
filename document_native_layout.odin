@@ -25,6 +25,7 @@ native_text_width :: proc(a:^App,text:string,style:Native_Style,zoom:f32)->f32 {
 }
 native_font_kind :: proc(style:Native_Style)->Font_Kind {
     if !style.mono&&!style.bold&&!style.italic {return .UI}
+    if !style.mono&&style.bold&&!style.italic {return .UI_Bold}
     if style.bold&&style.italic {return .Terminal_Bold_Italic}
     if style.bold {return .Terminal_Bold}
     if style.italic {return .Terminal_Italic}
@@ -73,12 +74,18 @@ native_flow_text :: proc(flow:^Native_Flow,node:int,text:string,style:Native_Sty
         } else {end:=i;for end<len(text)&&text[end]!=' '&&text[end]!='\n'&&text[end]!='\t'&&text[end]!='\r' {end+=1};native_flow_word(flow,node,text[i:end],style);i=end}
     }
 }
+native_node_text_append :: proc(doc:^Native_Document,node:int,out:^[dynamic]u8,depth:int) {
+    if node<0||node>=len(doc.nodes)||depth>256 {return}
+    if doc.nodes[node].tag=="#text" {append(out,doc.nodes[node].text);return}
+    child:=doc.nodes[node].first
+    for child>=0 {native_node_text_append(doc,child,out,depth+1);child=doc.nodes[child].next}
+}
 native_node_text :: proc(doc:^Native_Document,node:int,depth:int=0)->string {
     if node<0||node>=len(doc.nodes)||depth>256 {return ""}
     if doc.nodes[node].tag=="#text" {return doc.nodes[node].text}
+    // Collect once instead of copying every descendant's text at every ancestor.
     out:=make([dynamic]u8,context.temp_allocator)
-    child:=doc.nodes[node].first
-    for child>=0 {append(&out,native_node_text(doc,child,depth+1));child=doc.nodes[child].next}
+    native_node_text_append(doc,node,&out,depth)
     return string(out[:])
 }
 native_flow_length :: proc(flow:^Native_Flow,value:string,basis:f32,fallback:f32=0)->f32 {
@@ -599,6 +606,6 @@ native_document_render :: proc(a:^App,view:^Document_View,box:Preview_Layout) {
     }
     if doc.height>viewport.h {
         thumb:=max(24,viewport.h*viewport.h/doc.height);position:=(viewport.h-thumb)*view.scroll/max(1,doc.height-viewport.h)
-        ui_rect(a,viewport.x+viewport.w-5,viewport.y+position,3,thumb,MUTED)
+        ui_scrollbar(a,viewport.x+viewport.w-8,viewport.y+position,thumb)
     }
 }

@@ -43,6 +43,9 @@ Media_View :: struct {
     playable,has_audio,paused,finished,muted:bool,
     duration,position,volume:f64,
     command_revision,audio_revision,audio_applied:u64,
+    decoder_pid:posix.pid_t,
+    decoder_paused:bool,
+    pause_tick:time.Tick,
     drag:Media_Control,
     drag_fraction:f64,
     frames:[16]Media_Frame,
@@ -53,6 +56,10 @@ Media_View :: struct {
     clock_pts,clock_delay:f64,
     trace:bool,
     decoded,presented,skipped:u64,
+    // Render-thread playhead smoothing between frame and progress updates.
+    shown_position,presented_pts:f64,
+    progress_tick:time.Tick,
+    shown_started,video,frame_shown,progress_seen:bool,
     worst_lateness:f64,
 }
 Media_Process :: struct {
@@ -146,7 +153,9 @@ media_audio_update :: proc(process:^Media_Process) {
     if !process.audio_pending {
         sync.mutex_lock(&view.mutex)
         revision:=view.audio_revision;volume:=view.volume;if view.muted {volume=0}
+        paused:=view.paused
         sync.mutex_unlock(&view.mutex)
+        if paused {return}
         if revision==process.audio_revision {return}
         command:=fmt.bprintf(process.audio_command[:],"cvolume@minor_volume -1 volume %.6f\n",volume)
         process.audio_command_length=len(command);process.audio_command_sent=0
@@ -194,6 +203,7 @@ media_error_line :: proc(process:^Media_Process,line:string) {
                 if process.command_revision==view.command_revision {
                     view.position=process.start_position+micros/1e6
                     if view.duration>0 {view.position=min(view.position,view.duration)}
+                    view.progress_seen=true;view.progress_tick=time.tick_now()
                     view.revision+=1
                 }
                 sync.mutex_unlock(&view.mutex);media_notify(view)
@@ -224,6 +234,15 @@ media_read :: proc(view:^Media_View,process:^Media_Process,destination:[]u8)->bo
     used:=0
     for used<len(destination) {
         if media_stopping(view)||media_command_changed(process) {return false}
+        if process.view!=nil {
+            sync.mutex_lock(&view.mutex)
+            for view.decoder_paused&&!media_stopping(view)&&view.command_revision==process.command_revision {
+                sync.cond_wait_with_timeout(&view.queue_cond,&view.mutex,50*time.Millisecond)
+            }
+            interrupted:=media_stopping(view)||view.command_revision!=process.command_revision
+            sync.mutex_unlock(&view.mutex)
+            if interrupted {return false}
+        }
         if process.offset<process.used {
             count:=min(process.used-process.offset,len(destination)-used)
             copy(destination[used:used+count],process.buffer[process.offset:process.offset+count])
@@ -250,6 +269,10 @@ media_read :: proc(view:^Media_View,process:^Media_Process,destination:[]u8)->bo
 }
 media_process_finish :: proc(view:^Media_View,process:^Media_Process)->int {
     status:c.int
+    // Clear ownership before reaping so UI controls can never signal a reused PID.
+    sync.mutex_lock(&view.mutex)
+    if view.decoder_pid==process.pid {view.decoder_pid=0;view.decoder_paused=false}
+    sync.mutex_unlock(&view.mutex)
     if process.pid>0 {
         reaped:=false
         for _ in 0..<10 {
@@ -324,8 +347,18 @@ media_queue_frame :: proc(view:^Media_View,process:^Media_Process,pixels:^[dynam
         view.clock_active=true;view.clock_tick=time.tick_now();view.clock_pts=pts
         view.clock_delay=MEDIA_BUFFER_SECONDS
         if view.paused||!view.playable {view.clock_delay=0}
+        if view.paused {view.clock_tick=view.pause_tick}
     }
     view.queue_count+=1;view.decoded+=1
+    // A paused seek still decodes its preview, then retains the warm decoder.
+    if view.paused {media_decoder_pause_locked(view,true)}
+    // The queue may use only two of the sixteen slots for large frames. Reuse
+    // buffers from consumed slots now, rather than allocating every slot as the
+    // ring rotates (which otherwise retains sixteen full-resolution frames).
+    for i in view.queue_count..<len(view.frames) {
+        idle:=&view.frames[(view.queue_head+i)%len(view.frames)]
+        if cap(idle.pixels)>cap(pixels^) {pixels^,idle.pixels=idle.pixels,pixels^}
+    }
     media_notify(view)
     return true
 }
@@ -334,7 +367,9 @@ media_queue_frame :: proc(view:^Media_View,process:^Media_Process,pixels:^[dynam
 media_present :: proc(view:^Media_View)->bool {
     sync.mutex_lock(&view.mutex);defer sync.mutex_unlock(&view.mutex)
     if view.queue_count==0||!view.clock_active {return false}
-    now:=time.duration_seconds(time.tick_diff(view.clock_tick,time.tick_now()))-view.clock_delay+view.clock_pts
+    if view.paused&&view.frame_shown {return false}
+    tick:=view.pause_tick if view.paused else time.tick_now()
+    now:=time.duration_seconds(time.tick_diff(view.clock_tick,tick))-view.clock_delay+view.clock_pts
     selected:= -1
     for view.queue_count>0 {
         slot:=view.queue_head
@@ -345,7 +380,7 @@ media_present :: proc(view:^Media_View)->bool {
     if selected<0 {return false}
     frame:=&view.frames[selected]
     renderer_pixels_exchange(&view.frame,&frame.pixels,frame.width,frame.height)
-    view.position=frame.position;view.revision+=1;view.presented+=1
+    view.position=frame.position;view.presented_pts=frame.pts;view.frame_shown=true;view.revision+=1;view.presented+=1
     view.worst_lateness=max(view.worst_lateness,max(0,now-frame.pts))
     sync.cond_signal(&view.queue_cond)
     return true
@@ -355,18 +390,26 @@ media_wait_delay :: proc(a:^App)->f64 {
     for tab in a.tabs {
         view:=tab.media;if view==nil {continue}
         sync.mutex_lock(&view.mutex)
-        if view.queue_count>0&&view.clock_active {
+        if view.queue_count>0&&view.clock_active&&(!view.paused||!view.frame_shown) {
             elapsed:=time.duration_seconds(time.tick_diff(view.clock_tick,time.tick_now()))
             due:=view.frames[view.queue_head].pts-view.clock_pts+view.clock_delay
             delay=min(delay,max(0.001,due-elapsed))
         }
         sync.mutex_unlock(&view.mutex)
+        if tab==active_tab(a)&&media_playing(view) {delay=min(delay,1.0/120)}
     }
     return delay
 }
 media_restart_locked :: proc(view:^Media_View) {
-    view.command_revision+=1;view.queue_head=0;view.queue_count=0;view.clock_active=false
+    view.command_revision+=1;view.queue_head=0;view.queue_count=0;view.clock_active=false;view.frame_shown=false;view.progress_seen=false
     sync.cond_signal(&view.queue_cond)
+}
+// Pause the owned child without discarding codec state, audio filters or frames.
+// Called with view.mutex held, including when registering/retiring the child.
+media_decoder_pause_locked :: proc(view:^Media_View,paused:bool) {
+    if view.decoder_pid<=0||view.decoder_paused==paused {return}
+    signal:=posix.Signal.SIGSTOP if paused else posix.Signal.SIGCONT
+    if posix.kill(view.decoder_pid,signal)==.OK {view.decoder_paused=paused}
 }
 media_worker :: proc(worker:^thread.Thread) {
     view:=cast(^Media_View)worker.data
@@ -386,12 +429,21 @@ media_worker :: proc(worker:^thread.Thread) {
     // FFmpeg's own stream inspection avoids requiring ffprobe as another tool.
     probe_args:=make([dynamic]string,context.temp_allocator)
     append(&probe_args,executable,"-nostdin","-hide_banner")
-    append(&probe_args,..input_args[:]);append(&probe_args,"-i",input)
+    append(&probe_args,..input_args[:])
+    // New FFmpeg releases can keep input pacing steady after SIGCONT. Detect
+    // the option during the existing probe, retaining support for FFmpeg 5+.
+    probe_base:=len(probe_args)
+    append(&probe_args,"-readrate_catchup","1","-i",input)
     probe:Media_Process
-    if !media_spawn(&probe,probe_args[:]) {media_message(view,"Could not start FFmpeg.");return}
     byte:[1]u8
-    for media_read(view,&probe,byte[:]) {}
-    media_process_finish(view,&probe)
+    catchup:=true
+    for {
+        if !media_spawn(&probe,probe_args[:]) {media_message(view,"Could not start FFmpeg.");return}
+        for media_read(view,&probe,byte[:]) {}
+        media_process_finish(view,&probe)
+        if !catchup||!strings.contains(string(probe.diagnostic[:]),"Unrecognized option 'readrate_catchup'") {break}
+        delete(probe.diagnostic);resize(&probe_args,probe_base);append(&probe_args,"-i",input);catchup=false
+    }
     has_audio:=strings.contains(string(probe.diagnostic[:]),"Audio:")
     has_video:=strings.contains(string(probe.diagnostic[:]),"Video:")
     duration:=media_duration(string(probe.diagnostic[:]))
@@ -408,22 +460,21 @@ media_worker :: proc(worker:^thread.Thread) {
     audio_output:=media_audio_output()
     audio,hardware:=has_audio,true
     warning:=""
-    last_command:=u64(0);holding:=false
     for !media_stopping(view) {
         sync.mutex_lock(&view.mutex)
         command:=view.command_revision;paused:=view.paused;finished:=view.finished
-        position:=view.position;volume:=view.volume;audio_revision:=view.audio_revision;if view.muted {volume=0}
+        position:=view.position;volume:=view.volume;audio_revision:=view.audio_revision;if view.muted||paused {volume=0}
         sync.mutex_unlock(&view.mutex)
-        // Keep the final frame and wait for replay, or hold a paused preview.
-        if finished||(holding&&command==last_command) {time.sleep(20*time.Millisecond);continue}
-        last_command=command;holding=false
+        // Keep the final frame and wait for replay.
+        if finished {time.sleep(20*time.Millisecond);continue}
         arguments:=make([dynamic]string)
-        interactive:=audio&&(!paused||!has_video)
+        interactive:=audio
         append(&arguments,executable,("-stdin" if interactive else "-nostdin"),"-hide_banner","-loglevel",("info" if has_video||interactive else "error"),"-nostats","-threads","0")
         if has_video&&hardware {append(&arguments,"-hwaccel","auto")}
         append(&arguments,"-stats_period","0.1","-progress","pipe:2")
-        // Audio shares the input clock; silent video can decode ahead freely.
-        if audio {append(&arguments,"-re")}
+        // Older FFmpeg releases cannot reset input pacing after a pause; let
+        // the audio device provide backpressure instead of racing to catch up.
+        if audio&&catchup {append(&arguments,"-re","-readrate_catchup","1")}
         append(&arguments,..input_args[:])
         seek_arg:=fmt.aprintf("%.6f",position);defer delete(seek_arg)
         volume_arg:=fmt.aprintf("volume@minor_volume=%.6f",volume);defer delete(volume_arg)
@@ -439,19 +490,21 @@ media_worker :: proc(worker:^thread.Thread) {
             append(&arguments,"-map","0:v:0","-an","-sn","-dn","-vf","scale=ceil(iw*sar):ih,setsar=1,setpts=PTS-STARTPTS,showinfo=checksum=0",
                 "-c:v","pam","-pix_fmt","rgba","-fps_mode","passthrough","-flush_packets","1","-f","image2pipe","pipe:1")
         }
-        if audio&&(!paused||!has_video) {
+        if audio {
             append(&arguments,"-map","0:a:0","-vn","-sn","-dn","-af",audio_filter,
                 "-c:a","pcm_s16le","-ac","2","-ar","48000")
             if audio_output=="pulse" {append(&arguments,"-buffer_duration","120","-prebuf","0")}
             append(&arguments,"-f",audio_output,"default")
         }
-        if paused&&!has_video {delete(arguments);holding=true;continue}
         process:Media_Process
         spawned:=media_spawn(&process,arguments[:],interactive);delete(arguments)
         if !spawned {media_message(view,"Could not start FFmpeg playback.");return}
         process.view=view;process.command_revision=command;process.start_position=position;process.timed_video=has_video;process.looping=loop_video
         process.audio_revision=audio_revision
-        sync.mutex_lock(&view.mutex);view.audio_applied=audio_revision;sync.mutex_unlock(&view.mutex)
+        sync.mutex_lock(&view.mutex)
+        view.audio_applied=audio_revision;view.video=has_video;view.decoder_pid=process.pid;view.decoder_paused=false
+        if view.paused&&!has_video {media_decoder_pause_locked(view,true)}
+        sync.mutex_unlock(&view.mutex)
         count:=0
         if has_video {
             for {
@@ -461,18 +514,15 @@ media_worker :: proc(worker:^thread.Thread) {
                 if !media_queue_frame(view,&process,&pixels,width,height) {break};count+=1
                 if count==1 {media_message(view,warning)}
                 media_notify(view)
-                if paused {holding=true;break}
             }
         } else {
             media_message(view,"Playing audio")
             for media_read(view,&process,byte[:]) {}
         }
-        // Paused previews need only one frame. Finish the owned child immediately.
-        if holding {posix.kill(process.pid,.SIGKILL)}
         status:=media_process_finish(view,&process)
         diagnostic:=strings.trim_space(string(process.diagnostic[:]))
         if media_stopping(view) {delete(process.diagnostic);return}
-        if media_command_changed(&process)||holding {delete(process.diagnostic);continue}
+        if media_command_changed(&process) {delete(process.diagnostic);continue}
         if count==0&&status!=0&&audio&&has_video {
             audio=false;warning="Audio output unavailable; video continues."
             delete(process.diagnostic);continue
@@ -538,21 +588,22 @@ media_close :: proc(a:^App) {
 }
 Media_Control :: enum {None,Play,Back,Forward,Mute,Volume,Seek,Close}
 Media_Controls :: struct {bar:Explorer_Rect,items:[Media_Control]Explorer_Rect,time:Explorer_Rect}
+// Controls float on a glass panel above the bottom edge of the viewer.
 media_controls :: proc(a:^App,playable:bool)->Media_Controls {
     width,height:=f32(a.renderer.width)/a.scale,f32(a.renderer.height)/a.scale
-    h:f32=54;if playable {h=126}
-    box:=Media_Controls{bar={0,max(HEADER,height-h),width,h}}
-    y:=box.bar.y
-    box.items[.Close]={max(0,width-76),y+8,64,26}
+    margin:=f32(16)
+    w:=min(width-2*margin,f32(760))
+    h:f32=52;if playable {h=112}
+    x:=(width-w)/2;y:=max(HEADER+8,height-h-margin)
+    box:=Media_Controls{bar={x,y,w,h}}
+    box.items[.Close]={x+w-42,y+11,30,30}
     if playable {
-        box.items[.Seek]={16,y+37,max(1,width-32),20}
-        box.items[.Play]={16,y+64,64,28}
-        box.items[.Back]={88,y+64,44,28};box.items[.Forward]={140,y+64,44,28}
-        box.time={196,y+72,max(0,width-440),16}
-        box.items[.Mute]={max(196,width-212),y+64,64,28}
-        box.items[.Volume]={max(268,width-136),y+64,112,28}
-        // Stack the time beneath the transport on narrow windows.
-        if width<620 {box.time={196,y+103,max(0,width-212),16}}
+        box.items[.Seek]={x+18,y+46,max(1,w-36),18}
+        row:=y+70
+        box.items[.Back]={x+14,row,34,34};box.items[.Play]={x+52,row,34,34};box.items[.Forward]={x+90,row,34,34}
+        box.time={x+136,row+17,max(0,w-330),16}
+        box.items[.Mute]={x+w-162,row,34,34}
+        box.items[.Volume]={x+w-120,row+8,102,18}
     }
     return box
 }
@@ -569,8 +620,22 @@ media_seek_locked :: proc(view:^Media_View,position:f64) {
 media_control_locked :: proc(view:^Media_View,control:Media_Control) {
     #partial switch control {
     case .Play:
-        if view.finished {view.position=0;view.finished=false;view.paused=false} else {view.paused=!view.paused}
-        media_restart_locked(view)
+        if view.finished {
+            view.position=0;view.finished=false;view.paused=false;media_restart_locked(view)
+        } else {
+            now:=time.tick_now()
+            view.paused=!view.paused
+            if view.paused {
+                view.pause_tick=now
+                if view.clock_active||!view.video {media_decoder_pause_locked(view,true)}
+            } else {
+                if view.clock_active {view.clock_tick=time.tick_add(view.clock_tick,time.tick_diff(view.pause_tick,now))}
+                if view.progress_seen {view.progress_tick=time.tick_add(view.progress_tick,time.tick_diff(view.pause_tick,now))}
+                media_decoder_pause_locked(view,false)
+                if view.has_audio {view.audio_revision+=1}
+            }
+            sync.cond_signal(&view.queue_cond)
+        }
     case .Back:media_seek_locked(view,view.position-10)
     case .Forward:media_seek_locked(view,view.position+10)
     case .Mute:view.muted=!view.muted;view.audio_revision+=1
@@ -645,7 +710,37 @@ media_view_update :: proc(a:^App) {
         sync.mutex_lock(&view.frame.mutex);generation:=view.frame.generation;sync.mutex_unlock(&view.frame.mutex)
         sync.mutex_lock(&view.mutex);revision:=view.revision;sync.mutex_unlock(&view.mutex)
         if view.frame_seen!=generation||view.seen!=revision {view.frame_seen=generation;view.seen=revision;a.dirty=true}
+        if media_playing(view) {a.dirty=true}
     }
+}
+// Called with view.mutex held. Video follows the presentation clock from the
+// last shown frame, so the playhead moves continuously between frames, holds
+// while the clock waits for buffering and never runs past a stalled decoder.
+// Audio-only playback follows the wall clock between FFmpeg progress lines.
+media_display_position :: proc(view:^Media_View,raw,duration:f64,playing:bool)->f64 {
+    now:=time.tick_now()
+    predicted:=raw
+    if playing {
+        if view.video {
+            if view.clock_active {
+                // Until a frame from this start or seek is shown, measure from
+                // the clock's first timestamp so playback starts without a step.
+                base:=view.presented_pts if view.frame_shown else view.clock_pts
+                clock:=time.duration_seconds(time.tick_diff(view.clock_tick,now))-view.clock_delay+view.clock_pts
+                predicted=raw+clamp(clock-base,0,0.25)
+            }
+        } else if view.progress_seen {predicted=raw+min(time.duration_seconds(time.tick_diff(view.progress_tick,now)),0.55)}
+        if duration>0 {predicted=min(predicted,duration)}
+    }
+    shown:=predicted
+    // Never step backwards while playing, except for seeks and loops.
+    if playing&&view.shown_started&&predicted<view.shown_position&&view.shown_position-predicted<min(0.5,duration*0.5) {shown=view.shown_position}
+    view.shown_started=true;view.shown_position=shown
+    return shown
+}
+media_playing :: proc(view:^Media_View)->bool {
+    sync.mutex_lock(&view.mutex);defer sync.mutex_unlock(&view.mutex)
+    return view.playable&&!view.paused&&!view.finished&&view.drag==.None&&view.duration>0
 }
 media_time :: proc(seconds:f64)->string {
     total:=int(max(0,seconds))
@@ -659,6 +754,8 @@ media_view_render :: proc(a:^App,view:^Media_View) {
     message:=strings.clone(string(view.message[:view.message_length]),context.temp_allocator)
     playable,paused,finished,muted:=view.playable,view.paused,view.finished,view.muted
     position,duration,volume:=view.position,view.duration,view.volume
+    playing:=playable&&!paused&&!finished&&view.drag==.None&&duration>0
+    position=media_display_position(view,position,duration,playing)
     sync.mutex_unlock(&view.mutex)
     if view.drag==.Seek {position=view.drag_fraction*duration}
     if view.drag==.Volume {volume=view.drag_fraction}
@@ -676,38 +773,87 @@ media_view_render :: proc(a:^App,view:^Media_View) {
         renderer_quad(&a.vertices,x,y,x+w,y+h,0,0,1,1,Color{1,1,1,1})
         for &vertex in a.vertices[start:] {vertex.texture=1}
     }
-    if !ready {ui_fit_text(a,message,20,HEADER+32,14,width-40,TEXT)}
-    ui_rect(a,box.bar.x,box.bar.y,box.bar.w,box.bar.h,PANEL)
-    ui_fit_text(a,view.path,16,box.bar.y+14,13,max(0,width-108),TEXT)
+    if !ready {ui_text_mid(a,message,24,HEADER+32,14,width-48,SOFT)}
+    bar:=box.bar
+    ui_shadow(a,bar.x,bar.y,bar.w,bar.h,16,28,12,Color{0,0,0,0.6})
+    ui_round_gradient(a,bar.x,bar.y,bar.w,bar.h,16,Color{0.14,0.14,0.15,0.80},Color{0.08,0.08,0.085,0.86})
+    ui_round_border(a,bar.x,bar.y,bar.w,bar.h,16,GLASS_RIM_TOP,GLASS_RIM_BOTTOM)
     mx,my:=glfw.GetCursorPos(r.window);hover:=media_control_at(box,f32(mx),f32(my))
-    for control in ([5]Media_Control{.Play,.Back,.Forward,.Mute,.Close}) {
-        if !playable&&control!=.Close {continue}
-        rect:=box.items[control]
-        ui_rect(a,rect.x,rect.y,rect.w,rect.h,(HOVER if hover==control else BG))
-        label:="Close"
-        #partial switch control {
-        case .Play:label="Play";if finished {label="Replay"} else if !paused {label="Pause"}
-        case .Back:label="-10s"
-        case .Forward:label="+10s"
-        case .Mute:label="Mute";if muted||volume==0 {label="Unmute"}
-        }
-        ui_fit_text(a,label,rect.x+7,rect.y+8,12,rect.w-14,(ACCENT if hover==control else TEXT))
+    ui_title(a,filepath.base(view.path),bar.x+18,bar.y+26,13,bar.w-74)
+    close:=box.items[.Close]
+    ui_control(a,close.x,close.y,close.w,close.h,.Ghost,hover==.Close)
+    ui_icon_close(a,close.x+close.w/2,close.y+close.h/2,8,TEXT if hover==.Close else SOFT)
+    if !playable {
+        hint:="Esc or Ctrl+C to return to the terminal"
+        title_w:=renderer_text_width(r,filepath.base(view.path),13*a.scale,.UI_Bold)/a.scale
+        ui_text_mid(a,hint,bar.x+32+title_w,bar.y+26,12,bar.w-title_w-90,MUTED)
+        return
     }
-    if playable {
-        seek:=box.items[.Seek];fraction:f32=0
-        if duration>0 {fraction=clamp(f32(position/duration),0,1)}
-        ui_rect(a,seek.x,seek.y+8,seek.w,4,LINE)
-        ui_rect(a,seek.x,seek.y+8,seek.w*fraction,4,ACCENT)
-        if duration>0 {ui_rect(a,seek.x+seek.w*fraction-3,seek.y+4,6,12,TEXT)}
-        end:="LIVE";if duration>0 {end=media_time(duration)}
-        ui_fit_text(a,fmt.tprintf("%s / %s",media_time(position),end),box.time.x,box.time.y,12,box.time.w,TEXT)
-        rect:=box.items[.Volume];amount:=f32(volume);if muted {amount=0}
-        ui_rect(a,rect.x,rect.y+12,rect.w,4,LINE);ui_rect(a,rect.x,rect.y+12,rect.w*amount,4,ACCENT)
-        ui_rect(a,rect.x+rect.w*amount-3,rect.y+8,6,12,TEXT)
-        hint:="Space: play/pause · ←/→: seek · ↑/↓: volume · M: mute · Esc: close"
-        if message!="" {hint=fmt.tprintf("%s · %s",message,hint)}
-        ui_fit_text(a,hint,16,box.bar.y+104,11,(180 if width<620 else width-32),MUTED)
-    } else {ui_fit_text(a,"Esc or Ctrl+C · Return to terminal",16,box.bar.y+35,12,width-32,MUTED)}
+    for control in ([4]Media_Control{.Play,.Back,.Forward,.Mute}) {
+        rect:=box.items[control]
+        ui_control(a,rect.x,rect.y,rect.w,rect.h,.Ghost,hover==control)
+        color:=TEXT if hover==control else SOFT
+        cx,cy:=rect.x+rect.w/2,rect.y+rect.h/2
+        #partial switch control {
+        case .Play:
+            if finished {explorer_icon(a,.Reload,cx-8,cy-8.5,color)}
+            else if !paused {ui_round(a,cx-5,cy-7,3.5,14,1.5,color);ui_round(a,cx+1.5,cy-7,3.5,14,1.5,color)}
+            else {media_play_icon(a,cx,cy,color)}
+        case .Back:media_skip_icon(a,cx,cy,color,-1)
+        case .Forward:media_skip_icon(a,cx,cy,color,1)
+        case .Mute:media_speaker_icon(a,cx,cy,color,muted||volume==0)
+        }
+    }
+    seek:=box.items[.Seek];fraction:f32=0
+    if duration>0 {fraction=clamp(f32(position/duration),0,1)}
+    media_slider(a,seek,fraction,hover==.Seek||view.drag==.Seek,duration>0)
+    end:="Live";if duration>0 {end=media_time(duration)}
+    ui_text_mid(a,fmt.tprintf("%s / %s",media_time(position),end),box.time.x,box.time.y,12,box.time.w,SOFT)
+    amount:=f32(volume);if muted {amount=0}
+    media_slider(a,box.items[.Volume],amount,hover==.Volume||view.drag==.Volume,true)
+    hint:="Space play/pause · ←/→ seek · ↑/↓ volume · M mute · Esc close"
+    if message!="" {hint=message}
+    hint_w:=renderer_text_width(r,hint,11*a.scale)/a.scale
+    title_w:=renderer_text_width(r,filepath.base(view.path),13*a.scale,.UI_Bold)/a.scale
+    if bar.w-title_w-90>hint_w {ui_text_mid(a,hint,bar.x+bar.w-56-hint_w,bar.y+26,11,hint_w+2,MUTED)}
+}
+media_slider :: proc(a:^App,rect:Explorer_Rect,fraction:f32,active,knob:bool) {
+    // The fill end and knob keep subpixel positions so movement stays smooth.
+    s:=a.scale;cy:=rect.y+rect.h/2
+    ui_round(a,rect.x,cy-2,rect.w,4,2,Color{1,1,1,0.14})
+    if fraction>0 {renderer_round(&a.vertices,math.round(rect.x*s),(cy-2)*s,max(4,rect.w*fraction)*s,4*s,2*s,ACCENT,ACCENT)}
+    if knob {
+        size:=f32(14 if active else 12)
+        kx:=rect.x+rect.w*fraction
+        ui_shadow(a,kx-size/2,cy-size/2,size,size,size/2,3,1,Color{0,0,0,0.5})
+        renderer_round(&a.vertices,(kx-size/2)*s,(cy-size/2)*s,size*s,size*s,size/2*s,Color{1,1,1,1},Color{1,1,1,1})
+    }
+}
+// Filled triangle with stroked edges for smooth, antialiased sides.
+media_triangle :: proc(a:^App,p0,p1,p2:[2]f32,color:Color) {
+    append(&a.vertices,Vertex{pos=p0*a.scale,color=color},Vertex{pos=p1*a.scale,color=color},Vertex{pos=p2*a.scale,color=color})
+    ui_stroke(a,p0[0],p0[1],p1[0],p1[1],color,1);ui_stroke(a,p1[0],p1[1],p2[0],p2[1],color,1);ui_stroke(a,p2[0],p2[1],p0[0],p0[1],color,1)
+}
+media_play_icon :: proc(a:^App,cx,cy:f32,color:Color) {media_triangle(a,{cx-4,cy-7},{cx+7,cy},{cx-4,cy+7},color)}
+media_skip_icon :: proc(a:^App,cx,cy:f32,color:Color,direction:f32) {
+    for offset in ([2]f32{-4.5,1.5}) {
+        x:=cx+offset*direction
+        if direction>0 {media_triangle(a,{x-2,cy-5},{x+4,cy},{x-2,cy+5},color)}
+        else {media_triangle(a,{x+2,cy-5},{x-4,cy},{x+2,cy+5},color)}
+    }
+}
+media_speaker_icon :: proc(a:^App,cx,cy:f32,color:Color,muted:bool) {
+    ui_round(a,cx-7,cy-3,3.5,6,1,color)
+    media_triangle(a,{cx-4,cy-3},{cx+1,cy-7},{cx+1,cy+7},color)
+    media_triangle(a,{cx-4,cy-3},{cx+1,cy+7},{cx-4,cy+3},color)
+    if muted {ui_stroke(a,cx+4,cy-3,cx+9,cy+3,color);ui_stroke(a,cx+9,cy-3,cx+4,cy+3,color);return}
+    steps:=8
+    for radius in ([2]f32{4.5,8}) {
+        for i in 0..<steps {
+            a0:=-0.8+1.6*f32(i)/f32(steps);a1:=-0.8+1.6*f32(i+1)/f32(steps)
+            ui_stroke(a,cx+1+math.cos(a0)*radius,cy+math.sin(a0)*radius,cx+1+math.cos(a1)*radius,cy+math.sin(a1)*radius,color,1.3)
+        }
+    }
 }
 
 // Uses the real FFmpeg worker without requiring a desktop or touching a session.
@@ -762,6 +908,22 @@ media_sanity :: proc(path:string)->bool {
             controls_ok=controls_ok&&view.command_revision==command&&view.clock_tick==clock&&!view.paused
             sync.mutex_unlock(&view.mutex)
             if !controls_ok {fmt.eprintln("Live mute/unmute/volume failed to preserve advancing playback.")}
+            // An ordinary pause must retain the child and queued frames. Resume
+            // should show the next frame without starting or seeking FFmpeg.
+            sync.mutex_lock(&view.mutex);decoder:=view.decoder_pid;sync.mutex_unlock(&view.mutex)
+            media_view_key(a,glfw.KEY_SPACE,0)
+            sync.mutex_lock(&view.frame.mutex);paused_frame:=view.frame.generation;sync.mutex_unlock(&view.frame.mutex)
+            time.sleep(250*time.Millisecond);media_present(view)
+            sync.mutex_lock(&view.frame.mutex);pause_held:=view.frame.generation==paused_frame;sync.mutex_unlock(&view.frame.mutex)
+            resumed:=time.tick_now()
+            media_view_key(a,glfw.KEY_SPACE,0)
+            resumed_frame:=media_wait_frames(view,paused_frame+1)
+            resume_ms:=time.duration_seconds(time.tick_diff(resumed,time.tick_now()))*1000
+            sync.mutex_lock(&view.mutex)
+            retained:=decoder>0&&view.decoder_pid==decoder&&view.command_revision==command
+            sync.mutex_unlock(&view.mutex)
+            controls_ok=pause_held&&retained&&resumed_frame&&resume_ms<100&&controls_ok
+            fmt.printf("FFmpeg warm resume: %.2fms, decoder retained: %v, paused frame held: %v\n",resume_ms,retained,pause_held)
             // Seek while paused must display the requested frame and stay still.
             media_view_key(a,glfw.KEY_SPACE,0)
             sync.mutex_lock(&view.frame.mutex);before:=view.frame.generation;sync.mutex_unlock(&view.frame.mutex)
@@ -848,11 +1010,17 @@ media_decode_still :: proc(source:^Document_Source,bytes:[]u8)->(pixels:[]u8,wid
     executable:=media_ffmpeg();if executable=="" {return nil,0,0,"FFmpeg is required for this image format."}
     directory,temp_error:=os.mkdir_temp("","minor-media-asset-*",context.allocator)
     if temp_error!=nil {return nil,0,0,"Could not prepare the image asset."}
-    defer os.remove_all(directory)
+    defer {os.remove_all(directory);delete(directory)}
     path:=fmt.tprintf("%s/image",directory)
     if os.write_entire_file(path,bytes,{.Read_User,.Write_User})!=nil {return nil,0,0,"Could not prepare the image asset."}
     process:Media_Process
-    args:=[]string{executable,"-nostdin","-hide_banner","-loglevel","error","-threads","0","-i",path,
+    // These bytes may come from an untrusted document's <img>. Permit image
+    // demuxers only: playlists must not turn image decoding into arbitrary
+    // local-file reads or network requests. MOV is needed for AVIF/HEIF; keep
+    // its default prohibition on external track references remains in effect.
+    image_formats:="alias_pix,apng,bmp_pipe,brender_pix,cri_pipe,dds_pipe,dpx_pipe,exr_pipe,gem_pipe,gif,gif_pipe,hdr_pipe,j2k_pipe,jpeg_pipe,jpegls_pipe,jpegxl_pipe,jpegxs_pipe,mov,mp4,m4a,3gp,3g2,mj2,pam_pipe,pbm_pipe,pcx_pipe,pfm_pipe,pgm_pipe,pgmyuv_pipe,pgx_pipe,phm_pipe,photocd_pipe,pictor_pipe,png_pipe,ppm_pipe,psd_pipe,qdraw_pipe,qoi_pipe,sgi_pipe,sunrast_pipe,svg_pipe,tiff_pipe,vbn_pipe,webp_anim,webp_pipe,xbm_pipe,xpm_pipe,xwd_pipe"
+    args:=[]string{executable,"-nostdin","-hide_banner","-loglevel","error","-threads","0",
+        "-protocol_whitelist","file","-format_whitelist",image_formats,"-i",path,
         "-map","0:v:0","-frames:v","1","-c:v","pam","-pix_fmt","rgba","-f","image2pipe","pipe:1"}
     if !media_spawn(&process,args) {return nil,0,0,"Could not start the image decoder."}
     output:[dynamic]u8

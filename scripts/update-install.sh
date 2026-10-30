@@ -38,7 +38,7 @@ actual=$(sha256sum -- "$next")
 actual=${actual%% *}
 [ "$actual" = "$wanted" ] || fail 'Copied update checksum verification failed.'
 sync -f "$next"
-mv -f -- "$next" "$image" || fail 'Could not replace the AppImage.'
+mv -fT -- "$next" "$image" || fail 'Could not replace the AppImage.'
 next=
 sync -f "$(dirname -- "$image")"
 printf 'success\n' > "$result"

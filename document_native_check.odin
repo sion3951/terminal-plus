@@ -9,6 +9,7 @@ import "core:time"
 // A small diagnostic exercises the native pipeline without requiring a window.
 // It uses the real FreeType atlas and the same layout/DOM/script code as the UI.
 native_document_selfcheck :: proc()->bool {
+    if !native_js_safety_selfcheck() {return false}
     a:=new(App);defer free(a)
     a.scale=1;a.renderer.atlas.scale=1
     if !renderer_font_rasterize(&a.renderer.atlas) {return false}
@@ -29,6 +30,8 @@ native_document_selfcheck :: proc()->bool {
         <input id="field" value="edit me"><p>Unicode café λ, long words and wrapping.</p></body></html>`)
     native_js_init(&view.native.script,Native_JS_Host{data=view,get=native_dom_get,set=native_dom_set,call=native_dom_call})
     _,error:=native_js_evaluate(&view.native.script,`document.getElementById('counter').textContent='Ready';document.getElementById('run').addEventListener('click',function(event){document.getElementById('counter').textContent='Clicked';});document.getElementById('right').appendChild(document.getElementById('moving'));`)
+    if error!="" {fmt.eprintln(error);return false}
+    _,error=native_js_evaluate(&view.native.script,`var ordering=document.createElement('section');var older=document.createElement('i');var newer=document.createElement('i');ordering.appendChild(older);ordering.insertBefore(newer,older);if(ordering.querySelector('i')!==newer)throw 'DOM selector order';var matches=ordering.querySelectorAll('i');if(matches[0]!==newer||matches[1]!==older)throw 'DOM selector list order';`)
     if error!="" {fmt.eprintln(error);return false}
     native_document_layout(a,view,600)
     counter:=native_query(&view.native,"#counter");button:=native_query(&view.native,"#run");moving:=native_query(&view.native,"#moving");right:=native_query(&view.native,"#right")

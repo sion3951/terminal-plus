@@ -25,7 +25,7 @@ native_dom_detach :: proc(doc:^Native_Document,node:int) {
 native_dom_insert :: proc(doc:^Native_Document,parent,child:int,before:int=-1)->bool {
     if parent<0||child<0||parent>=len(doc.nodes)||child>=len(doc.nodes)||native_dom_contains(doc,child,parent) {return false}
     if child==before {return true}
-    if before>=0&&doc.nodes[before].parent!=parent {return false}
+    if before>=len(doc.nodes)||before>=0&&doc.nodes[before].parent!=parent {return false}
     native_dom_detach(doc,child)
     doc.nodes[child].parent=parent;doc.nodes[child].hidden=native_has_attr(doc,child,"hidden")
     if before<0 {
@@ -67,12 +67,23 @@ native_dom_html :: proc(doc:^Native_Document,node:int,outer:bool=false)->string 
     return string(output[:])
 }
 native_dom_elements :: proc(view:^Document_View,parent:int,selector:string,first_only:bool=false)->Native_JS_Value {
-    doc:=&view.native;js:=&doc.script;result:=native_js_array(js,nil)
-    for _,node in doc.nodes {
-        if node==parent||!native_dom_contains(doc,parent,node,false)||!native_css_matches(doc,node,selector) {continue}
-        if html_node_inert(doc,node)&&!html_node_inert(doc,parent) {continue}
-        if first_only {return native_dom_object(node)}
-        append(&result.reference.items,native_dom_object(node))
+    doc:=&view.native;js:=&doc.script;result:Native_JS_Value
+    if !first_only {result=native_js_array(js,nil)}
+    if parent<0||parent>=len(doc.nodes) {if first_only {return {kind=.Null}};return result}
+    // Walk the live tree in document order. Allocation order becomes stale
+    // after insertBefore/reparenting and scanning every node also visits detached trees.
+    skip_inert:=!html_node_inert(doc,parent)
+    node:=doc.nodes[parent].first
+    for node>=0 {
+        inert:=skip_inert&&doc.nodes[node].tag=="template"
+        if !inert&&native_css_matches(doc,node,selector) {
+            if first_only {return native_dom_object(node)}
+            append(&result.reference.items,native_dom_object(node))
+        }
+        if !inert&&doc.nodes[node].first>=0 {node=doc.nodes[node].first;continue}
+        for node!=parent&&doc.nodes[node].next<0 {node=doc.nodes[node].parent}
+        if node==parent {break}
+        node=doc.nodes[node].next
     }
     if first_only {return {kind=.Null}}
     return result

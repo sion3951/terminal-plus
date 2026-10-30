@@ -37,12 +37,16 @@ native_select_render :: proc(a:^App,view:^Document_View) {
     if view.select_node<0||view.select_node>=len(view.native.nodes) {return}
     options:=native_select_options(view,view.select_node);if len(options)==0 {return}
     rect:=native_select_rect(a,view,len(options));first:=clamp(view.select_scroll,0,max(0,len(options)-8))
-    ui_rect(a,rect.x-1,rect.y-1,rect.w+2,rect.h+2,LINE);ui_rect(a,rect.x,rect.y,rect.w,rect.h,PANEL)
+    ui_glass(a,rect.x,rect.y,rect.w,rect.h,RADIUS_CONTROL)
     value:=native_select_value(view,view.select_node)
+    mx,my:=glfw.GetCursorPos(a.renderer.window)
     for option,row in options[first:min(len(options),first+8)] {
         y:=rect.y+f32(row)*28
-        if native_option_value(&view.native,option)==value {ui_rect(a,rect.x,y,rect.w,28,HOVER)}
-        ui_fit_text(a,native_node_text(&view.native,option),rect.x+10,y+8,14,rect.w-20,TEXT)
+        hover:=f32(mx)>=rect.x&&f32(mx)<rect.x+rect.w&&f32(my)>=y&&f32(my)<y+28
+        selected:=native_option_value(&view.native,option)==value
+        ui_row(a,rect.x+3,y+2,rect.w-6,24,false,hover)
+        if selected {ui_icon(a,.Check,rect.x+8,y+6,TEXT)}
+        ui_text_mid(a,native_node_text(&view.native,option),rect.x+30,y+14,13,rect.w-40,TEXT)
     }
 }
 native_select_mouse :: proc(a:^App,view:^Document_View,button,action:c.int,x,y:f32)->bool {

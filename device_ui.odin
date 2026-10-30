@@ -205,10 +205,10 @@ device_picker_click :: proc(a:^App,x,y:f32) {
     }
 }
 
-ui_fit_text :: proc(a:^App,input_text:string,x,y,size,width:f32,color:Color) {
+ui_fit_text :: proc(a:^App,input_text:string,x,y,size,width:f32,color:Color,kind:Font_Kind=.UI) {
     if width<=0 {return}
     text:=input_text
-    font:=renderer_font_size(&a.renderer,size*a.scale)
+    font:=renderer_font_size(&a.renderer,size*a.scale,kind)
     limit:=width*a.scale
     ellipsis:=renderer_glyph(&a.renderer,font,'…').advance
     advance:f32
@@ -224,54 +224,66 @@ ui_fit_text :: proc(a:^App,input_text:string,x,y,size,width:f32,color:Color) {
             break
         }
     }
-    ui_text(a,text,x,y,size,color)
+    ui_text(a,text,x,y,size,color,kind)
 }
 device_picker_render :: proc(a:^App) {
     box:=device_picker_layout(a);picker:=&a.picker
     width,height:=f32(a.renderer.width)/a.scale,f32(a.renderer.height)/a.scale
-    ui_rect(a,0,0,width,height,Color{0,0,0,0.65})
-    ui_rect(a,box.x-1,box.y-1,box.w+2,box.h+2,LINE)
-    ui_rect(a,box.x,box.y,box.w,box.h,PANEL)
-    ui_text(a,"Select a device",box.x+16,box.y+13,16,TEXT)
-    ui_text(a,"×",box.x+box.w-29,box.y+12,18,MUTED)
-    ui_rect(a,box.x+16,box.y+42,box.w-32,34,LINE)
-    ui_rect(a,box.x+17,box.y+43,box.w-34,32,BG)
+    mouse_x,mouse_y:=glfw.GetCursorPos(a.renderer.window)
+    mx,my:=f32(mouse_x),f32(mouse_y)
+    ui_rect(a,0,0,width,height,SCRIM)
+    ui_glass(a,box.x,box.y,box.w,box.h,14)
+    ui_title(a,"Connect to a device",box.x+18,box.y+21,15,box.w-80)
+    close_hover:=mx>=box.x+box.w-38&&my>=box.y&&my<box.y+36
+    ui_control(a,box.x+box.w-34,box.y+7,26,26,.Ghost,close_hover)
+    ui_icon_close(a,box.x+box.w-21,box.y+20,7,TEXT if close_hover else MUTED)
+    ui_field(a,box.x+16,box.y+42,box.w-32,34,true,false)
+    explorer_icon(a,.Search,box.x+27,box.y+51,MUTED)
     input:=string(picker.input[:picker.used])
     font:=renderer_font_size(&a.renderer,14*a.scale)
     char_w:=font.glyphs['M'-32].advance/a.scale
-    capacity:=max(1,int((box.w-56)/char_w))
+    capacity:=max(1,int((box.w-76)/char_w))
     start:=0
     if picker.cursor>capacity {start=picker.cursor-capacity}
     for start<picker.used&&!utf8.rune_start(picker.input[start]) {start+=1}
-    if input=="" {ui_fit_text(a,"[user@]host[:port] or SSH alias",box.x+26,box.y+53,14,box.w-54,MUTED)}
+    text_x:=box.x+48
+    if input=="" {ui_text_mid(a,"user@host:port or SSH alias",text_x,box.y+59,14,box.w-76,MUTED)}
     else {
-        text_edit_selection_render(a,picker.input[:picker.used],start,picker.cursor,picker.input_anchor,picker.input_selecting,picker.select_all,box.x+26,box.y+47,14,box.w-54,24)
-        ui_fit_text(a,input[start:],box.x+26,box.y+53,14,box.w-54,TEXT)
+        text_edit_selection_render(a,picker.input[:picker.used],start,picker.cursor,picker.input_anchor,picker.input_selecting,picker.select_all,text_x,box.y+47,14,box.w-76,24)
+        ui_text_mid(a,input[start:],text_x,box.y+59,14,box.w-76,TEXT)
     }
     prefix:=string(picker.input[start:max(start,picker.cursor)])
-    caret_x:=box.x+26+renderer_text_width(&a.renderer,prefix,14*a.scale)/a.scale
-    ui_rect(a,min(caret_x,box.x+box.w-25),box.y+49,1,20,ACCENT)
+    caret_x:=text_x+renderer_text_width(&a.renderer,prefix,14*a.scale)/a.scale
+    if a.blink||!a.focused {ui_caret(a,min(caret_x,box.x+box.w-26),box.y+50,18)}
     matches:=device_picker_matches(a)
     device_picker_reveal(a,matches)
-    mouse_x,mouse_y:=glfw.GetCursorPos(a.renderer.window)
     for row in 0..<box.rows {
         index:=picker.scroll+row
         if index>=len(matches) {break}
         py:=box.rows_y+f32(row)*32
-        hover:=f32(mouse_x)>=box.x+16&&f32(mouse_x)<box.x+box.w-16&&f32(mouse_y)>=py&&f32(mouse_y)<py+32
-        if index==picker.selection||hover {ui_rect(a,box.x+16,py,box.w-32,30,LINE)}
+        hover:=mx>=box.x+16&&mx<box.x+box.w-16&&my>=py&&my<py+32
+        ui_row(a,box.x+10,py+1,box.w-20,30,index==picker.selection,hover)
         match:=matches[index]
-        label,kind:="Local terminal","LOCAL"
+        label,kind:="Local terminal","Local"
+        icon:UI_Icon=.Terminal
         if match>=0 {
-            p:=a.profiles[match];label=p.name;kind="SSH"
-            if p.configured {kind="CONFIG"} else if p.saved {kind="SAVED"}
+            p:=a.profiles[match];label=p.name;kind="SSH";icon=.Server
+            if p.configured {kind="SSH config"} else if p.saved {kind="Saved"}
         }
-        ui_fit_text(a,label,box.x+28,py+9,14,box.w-140,TEXT)
-        ui_text(a,kind,box.x+box.w-84,py+10,12,MUTED)
+        lit:=index==picker.selection||hover
+        ui_icon(a,icon,box.x+22,py+8,SOFT if lit else MUTED)
+        kind_w:=renderer_text_width(&a.renderer,kind,11*a.scale)/a.scale
+        ui_text_mid(a,label,box.x+48,py+16,14,box.w-kind_w-96,TEXT)
+        ui_text_mid(a,kind,box.x+box.w-26-kind_w,py+16,11,kind_w+2,MUTED)
     }
-    if len(matches)==0&&box.rows>0 {ui_text(a,"New device — press Enter to connect",box.x+26,box.rows_y+10,12,MUTED)}
-    if picker.error!="" {ui_fit_text(a,picker.error,box.x+16,box.y+box.h-63,12,box.w-32,Color{0.96,0.36,0.36,1})}
-    ui_text(a,"Enter connect · Esc close",box.x+16,box.y+box.h-32,12,MUTED)
-    ui_rect(a,box.x+box.w-126,box.y+box.h-44,110,30,LINE)
-    ui_text(a,"Connect",box.x+box.w-101,box.y+box.h-34,14,ACCENT)
+    if len(matches)==0&&box.rows>0 {
+        ui_icon(a,.Link,box.x+22,box.rows_y+8,MUTED)
+        ui_text_mid(a,"New device. Press Enter to connect.",box.x+48,box.rows_y+16,13,box.w-80,SOFT)
+    }
+    footer_y:=box.y+box.h-54
+    ui_rect(a,box.x+1,footer_y,box.w-2,1,Color{1,1,1,0.06})
+    if picker.error!="" {ui_text_mid(a,picker.error,box.x+18,footer_y-16,12,box.w-36,DANGER)}
+    ui_text_mid(a,"Enter to connect · Esc to close",box.x+18,box.y+box.h-29,12,box.w-170,MUTED)
+    connect_hover:=my>=box.y+box.h-44&&my<box.y+box.h-14&&mx>=box.x+box.w-126&&mx<box.x+box.w-16
+    ui_button(a,"Connect",box.x+box.w-126,box.y+box.h-44,110,30,.Primary,connect_hover)
 }

@@ -14,6 +14,8 @@ HTML_Parser :: struct {
     position,parent,html,head,body:int,
     stack,formatting:[dynamic]int,
     document,body_started:bool,
+    merged_text:[dynamic]u8,
+    merged_text_node:int,
 }
 html_space :: proc(b:u8)->bool {return b==' '||b=='\t'||b=='\n'||b=='\r'||b==12}
 html_alpha :: proc(b:u8)->bool {return b>='a'&&b<='z'||b>='A'&&b<='Z'}
@@ -120,6 +122,8 @@ html_next_token :: proc(p:^HTML_Parser)->HTML_Token {
     for cursor<len(text)&&!html_space(text[cursor])&&text[cursor]!='/'&&text[cursor]!='>' {cursor+=1}
     token:=HTML_Token{kind=.Start_Tag,tag=html_ascii_lower(text[name_start:cursor])}
     if ending {token.kind=.End_Tag}
+    attributes_seen:=make(map[string]bool)
+    defer delete(attributes_seen)
     for cursor<len(text) {
         for cursor<len(text)&&html_space(text[cursor]) {cursor+=1}
         if cursor>=len(text) {break}
@@ -139,8 +143,7 @@ html_next_token :: proc(p:^HTML_Parser)->HTML_Token {
                 if cursor<len(text) {cursor+=1}
             } else {value_start:=cursor;for cursor<len(text)&&!html_space(text[cursor])&&text[cursor]!='>' {cursor+=1};value=text[value_start:cursor]}
         }
-        duplicate:=false;for attr in token.attributes {if attr.name==name {duplicate=true;break}}
-        if !ending&&!duplicate&&name!="" {append(&token.attributes,Native_Attribute{name,native_entity_context(value,true)})}
+        if !ending&&!attributes_seen[name]&&name!="" {attributes_seen[name]=true;append(&token.attributes,Native_Attribute{name,native_entity_context(value,true)})}
     }
     // EOF in a tag is discarded, matching the HTML tokenizer's EOF recovery.
     p.position=len(text);return {kind=.End}
@@ -209,7 +212,16 @@ html_insert :: proc(p:^HTML_Parser,tag,text:string,attributes:[]Native_Attribute
     }
     if tag=="#text"&&before<0&&p.doc.nodes[parent].last>=0 {
         last:=p.doc.nodes[parent].last
-        if p.doc.nodes[last].tag=="#text" {p.doc.nodes[last].text=strings.concatenate([]string{p.doc.nodes[last].text,text});return last}
+        if p.doc.nodes[last].tag=="#text" {
+            // Malformed markup can emit one-byte text tokens repeatedly. Grow
+            // a shared buffer geometrically rather than copy the entire text
+            // into the document arena for every token.
+            if p.merged_text_node!=last {
+                p.merged_text=make([dynamic]u8,0,len(p.doc.nodes[last].text)+len(text))
+                append(&p.merged_text,p.doc.nodes[last].text);p.merged_text_node=last
+            }
+            append(&p.merged_text,text);p.doc.nodes[last].text=string(p.merged_text[:]);return last
+        }
     }
     node:=native_add_node(p.doc,parent,tag,text)
     if before>=0 {html_attach_before(p.doc,node,parent,before)}
@@ -390,7 +402,7 @@ html_end_tag :: proc(p:^HTML_Parser,tag:string) {
 native_parse_html :: proc(doc:^Native_Document,input:string,parent:int=0) {
     if !doc.initialized||parent<0||parent>=len(doc.nodes) {return}
     context.allocator=vmem.arena_allocator(&doc.arena)
-    p:=HTML_Parser{doc=doc,input=html_normalize_input(input),parent=parent,document=parent==0&&len(doc.nodes)==1,html=-1,head=-1,body=-1}
+    p:=HTML_Parser{doc=doc,input=html_normalize_input(input),parent=parent,document=parent==0&&len(doc.nodes)==1,html=-1,head=-1,body=-1,merged_text_node=-1}
     if !p.document {
         tag:=doc.nodes[parent].tag
         if html_raw_tag(tag) {

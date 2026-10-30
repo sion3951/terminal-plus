@@ -548,7 +548,6 @@ explorer_render :: proc(a:^App) {
     if !a.explorer_visible {return}
     tab:=active_tab(a);if tab==nil {return};e:=&tab.explorer;box:=explorer_layout(a)
     ui_rect(a,0,HEADER,box.width,box.bottom-HEADER,BG)
-    ui_rect(a,0,HEADER,box.width,min(box.table_y-HEADER,box.footer_y-HEADER),PANEL)
     mouse_x,mouse_y:=glfw.GetCursorPos(a.renderer.window)
     mx,my:=f32(mouse_x),f32(mouse_y)
     hover:=explorer_control_at(box,e,mx,my)
@@ -570,15 +569,17 @@ explorer_render :: proc(a:^App) {
         }
         entry:=pointer^
         over:=explorer_contains(rect,mx,my)
+        // Opaque surfaces so icon badges can sit on top of the tile.
         surface:=BG
-        if index==e.selected {surface=SELECTION}
-        else if over {surface=HOVER}
-        if surface!=BG {explorer_round_rect(a,rect,surface,7)}
+        if index==e.selected {surface=Color{0.135,0.135,0.14,1}}
+        else if over {surface=Color{0.085,0.085,0.09,1}}
+        if surface!=BG {explorer_round_rect(a,rect,surface,10)}
+        if index==e.selected {ui_round_border(a,rect.x,rect.y,rect.w,rect.h,10,Color{1,1,1,0.10},Color{1,1,1,0.04})}
         color:=SOFT;icon_color:=MUTED
         if index==e.selected {color=TEXT}
         if index==e.selected||over {icon_color=SOFT}
         if strings.has_prefix(entry.name,".")&&index!=e.selected&&!over {
-            color=MUTED;icon_color=Color{0.36,0.36,0.36,1}
+            color=MUTED;icon_color=FAINT
         }
         explorer_tile_icon(a,entry,rect.x+(rect.w-48)/2,rect.y+18,icon_color,surface)
         explorer_tile_label(a,entry.name,rect,color)
@@ -588,7 +589,7 @@ explorer_render :: proc(a:^App) {
         track:=f32(box.rows)*EXPLORER_TILE_HEIGHT
         thumb:=max(24,track*f32(box.rows)/f32(total_rows))
         position:=(track-thumb)*f32(e.scroll)/f32(max(1,explorer_max_scroll(box,count)))
-        explorer_round_rect(a,{box.width-7,box.rows_y+position,3,thumb},LINE,1.5)
+        ui_scrollbar(a,box.width-8,box.rows_y+position,thumb)
     }
     if box.rows>=1&&((!e.loaded)||count==0) {
         title,detail:="This folder is empty","Files and folders will appear here."
@@ -602,14 +603,13 @@ explorer_render :: proc(a:^App) {
         x:=(box.width-text_width)/2
         y:=box.rows_y+max(12,(box.footer_y-box.rows_y-100)/2)
         explorer_folder_icon(a,box.width/2-9,y,MUTED,BG)
-        title_width:=renderer_text_width(&a.renderer,title,16*a.scale)/a.scale
-        ui_fit_text(a,title,max(x,(box.width-title_width)/2),y+32,16,text_width,TEXT)
+        title_width:=renderer_text_width(&a.renderer,title,15*a.scale)/a.scale
+        ui_fit_text(a,title,max(x,(box.width-title_width)/2),y+32,15,text_width,TEXT,.UI_Bold)
         detail_width:=renderer_text_width(&a.renderer,detail,12*a.scale)/a.scale
         ui_fit_text(a,detail,max(x,(box.width-detail_width)/2),y+60,12,text_width,MUTED)
     } else if box.rows==0&&box.footer_y>box.rows_y {
         ui_fit_text(a,"Enlarge the window to browse files.",box.margin,box.rows_y+8,12,box.width-2*box.margin,MUTED)
     }
-    ui_rect(a,0,box.footer_y,box.width,box.bottom-box.footer_y,PANEL)
     ui_rect(a,0,box.footer_y,box.width,1,LINE)
     explorer_button(a,box.controls[.Copy],.Copy,"Copy path",hover==.Copy,e.listing.path!="")
     explorer_button(a,box.controls[.Insert],.Insert,"Insert cd",hover==.Insert,e.listing.path!="")
@@ -633,14 +633,14 @@ explorer_render :: proc(a:^App) {
     case .Insert:status="Insert cd command into terminal"
     case .None:
     }
-    if e.error!="" {status=e.error;color=Color{0.96,0.36,0.36,1}}
+    if e.error!="" {status=e.error;color=DANGER}
     else if !e.loaded&&(e.waiting||e.search_dirty) {
         status="Loading…"
         if !e.loaded&&e.ready {indexed,_:=explorer_progress(&e.browser);status=fmt.tprintf("Indexing %d files…",indexed)}
         else if e.search_dirty||e.page_pending {status="Searching…"}
         color=SOFT
     }
-    ui_fit_text(a,status,box.margin,box.footer_y+22,12,box.controls[.Copy].x-box.margin-12,color)
+    ui_text_mid(a,status,box.margin,box.footer_y+28,12,box.controls[.Copy].x-box.margin-12,color)
 }
 explorer_preview_line :: proc(bytes:[]u8)->string {
     text:=make([dynamic]u8,context.temp_allocator)
@@ -656,36 +656,47 @@ explorer_preview_render :: proc(a:^App) {
     tab:=active_tab(a);if tab==nil||!tab.explorer.preview_open {return}
     e:=&tab.explorer;box:=explorer_preview_layout(a)
     ui_rect(a,box.x,box.y,box.w,box.h,BG)
-    ui_rect(a,box.x,box.y,box.w,68,PANEL)
-    title:="FILE PREVIEW";path:=e.preview.path
+    ui_rect(a,box.x,box.y+67,box.w,1,LINE)
+    title:="Text";path:=e.preview.path
     view:=e.document
     if view!=nil {
-        title="HTML";if view.kind==.Markdown {title="MARKDOWN"}
+        title="HTML";if view.kind==.Markdown {title="Markdown"}
         path=view.path
     }
-    ui_text(a,title,box.x+16,box.y+13,12,ACCENT)
-    ui_fit_text(a,path,box.x+16,box.y+37,13,box.w-60,TEXT)
+    mouse_x,mouse_y:=glfw.GetCursorPos(a.renderer.window)
+    mx,my:=f32(mouse_x),f32(mouse_y)
+    controls_x:=box.x+box.w-48
+    if view!=nil {controls_x=box.x+box.w-(286 if view.kind==.HTML else 208)}
+    badge_w:=ui_badge(a,title,box.x+16,box.y+10,SOFT)
+    ui_title(a,filepath.base(path),box.x+24+badge_w,box.y+20,14,controls_x-box.x-badge_w-36)
+    ui_text_mid(a,path,box.x+16,box.y+48,12,box.w-32,MUTED)
     if view!=nil {
-        render_color,source_color:=MUTED,TEXT
-        if !view.source_mode {render_color,source_color=TEXT,MUTED}
-        ui_text(a,"Render",box.x+box.w-190,box.y+13,12,render_color)
-        ui_text(a,"Source",box.x+box.w-110,box.y+13,12,source_color)
+        // Segmented Render/Source control sharing the existing hit zones.
+        sx:=box.x+box.w-198;sy:=box.y+6
+        ui_round(a,sx,sy,156,28,RADIUS_CONTROL,Color{1,1,1,0.04})
+        ui_round_border(a,sx,sy,156,28,RADIUS_CONTROL,Color{1,1,1,0.08})
+        selected_x:=sx+2 if !view.source_mode else sx+78
+        ui_round_gradient(a,selected_x,sy+2,76,24,RADIUS_CONTROL-2,Color{1,1,1,0.12},Color{1,1,1,0.08})
+        render_hover:=my<box.y+33&&mx>=box.x+box.w-200&&mx<box.x+box.w-120
+        source_hover:=my<box.y+33&&mx>=box.x+box.w-120&&mx<box.x+box.w-40
+        ui_control_label(a,"Render",sx+2,sy+2,76,24,12,TEXT if !view.source_mode||render_hover else MUTED)
+        ui_control_label(a,"Source",sx+78,sy+2,76,24,12,TEXT if view.source_mode||source_hover else MUTED)
         if view.kind==.HTML {
-            color:=MUTED
-            border:=LINE
-            if view.dark_mode {color=ACCENT;border=ACCENT}
-            ui_rect(a,box.x+box.w-278,box.y+5,70,27,border)
-            ui_rect(a,box.x+box.w-277,box.y+6,68,25,BG)
-            ui_text(a,"Dark",box.x+box.w-266,box.y+13,12,color)
+            dark_hover:=my>=box.y+5&&my<box.y+33&&mx>=box.x+box.w-278&&mx<box.x+box.w-208
+            ui_control(a,box.x+box.w-278,sy,70,28,.Outline,dark_hover,true,view.dark_mode)
+            ui_dot(a,box.x+box.w-262,sy+14,6,ACCENT if view.dark_mode else FAINT)
+            ui_text_mid(a,"Dark",box.x+box.w-252,sy+14,12,40,TEXT if view.dark_mode||dark_hover else MUTED)
         }
     }
-    ui_text(a,"×",box.x+box.w-28,box.y+12,18,MUTED)
+    close_hover:=mx>=box.x+box.w-40&&my>=box.y&&my<box.y+40
+    ui_control(a,box.x+box.w-36,box.y+6,28,28,.Ghost,close_hover)
+    ui_icon_close(a,box.x+box.w-22,box.y+20,8,TEXT if close_hover else MUTED)
     e.preview_scroll=clamp(e.preview_scroll,0,max(0,len(e.lines)-box.rows))
     if view!=nil&&!view.source_mode {
         document_view_render_status(a,view,box)
     }
     else if e.waiting {ui_text(a,"Reading file...",box.x+20,box.y+88,14,MUTED)}
-    else if e.preview.error!="" {ui_fit_text(a,e.preview.error,box.x+20,box.y+88,14,box.w-40,Color{0.96,0.36,0.36,1})}
+    else if e.preview.error!="" {ui_fit_text(a,e.preview.error,box.x+20,box.y+88,14,box.w-40,DANGER)}
     else if e.binary {ui_text(a,"Binary file — text preview unavailable.",box.x+20,box.y+88,14,MUTED)}
     else {
         for row in 0..<box.rows {
@@ -694,16 +705,17 @@ explorer_preview_render :: proc(a:^App) {
             start:=e.lines[line];end:=len(e.preview.preview)
             if line+1<len(e.lines) {end=e.lines[line+1]}
             py:=box.y+83+f32(row)*22
-            ui_text(a,fmt.tprintf("%4d",line+1),box.x+12,py,12,MUTED)
+            ui_text(a,fmt.tprintf("%4d",line+1),box.x+12,py+1,12,FAINT)
             ui_fit_text(a,explorer_preview_line(e.preview.preview[start:end]),box.x+64,py,14,box.w-84,TEXT)
         }
     }
-    ui_rect(a,box.x,box.y+box.h-30,box.w,30,PANEL)
-    label:="Read-only · Esc close · Scroll to browse"
-    if e.preview.truncated {label="Read-only · First 128 KiB · Esc close"}
-    if view!=nil&&!view.source_mode {label="Rendered document · Esc close · Ctrl+F find · Ctrl+mouse wheel zoom"}
+    ui_rect(a,box.x,box.y+box.h-30,box.w,30,BG)
+    ui_rect(a,box.x,box.y+box.h-30,box.w,1,LINE)
+    label:="Read-only · Esc to close · Scroll to browse"
+    if e.preview.truncated {label="Read-only · First 128 KiB · Esc to close"}
+    if view!=nil&&!view.source_mode {label="Esc to close · Ctrl+F to find · Ctrl+scroll to zoom"}
     if view!=nil&&view.kind==.HTML {
         if view.control_error_seen!="" {label=view.control_error_seen}
     }
-    ui_fit_text(a,label,box.x+16,box.y+box.h-20,12,box.w-32,MUTED)
+    ui_text_mid(a,label,box.x+16,box.y+box.h-15,12,box.w-32,MUTED)
 }

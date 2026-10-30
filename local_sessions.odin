@@ -151,7 +151,10 @@ local_session_read_exact :: proc(fd:posix.FD,bytes:[]u8,timeout:int)->bool {
         elapsed:=int(time.duration_seconds(time.tick_diff(began,time.tick_now()))*1000)
         remaining:=max(0,timeout-elapsed)
         descriptor:=posix.pollfd{fd=fd,events={.IN}}
-        if remaining==0||posix.poll(&descriptor,1,c.int(remaining))<=0 {return false}
+        if remaining==0 {return false}
+        result:=posix.poll(&descriptor,1,c.int(remaining))
+        if result<0&&posix.errno()==.EINTR {continue}
+        if result<=0 {return false}
         available:=len(bytes)-used
         amount:=posix.read(fd,&bytes[used],c.size_t(available))
         if amount>0 {used+=int(amount)}
@@ -183,8 +186,15 @@ local_session_control :: proc(p:^PTY,kind:Local_Session_Kind)->bool {
 }
 local_session_open_socket :: proc(path:string)->posix.FD {
     address,valid:=local_session_address(path);if !valid {return -1}
-    fd:=local_socket(1,1|0x80000,0);if fd<0 {return -1}
-    if local_connect(fd,&address,c.uint(size_of(address)))!=0||!local_session_same_user(fd) {posix.close(fd);return -1}
+    // A full accept backlog must never block the UI during attach or close.
+    fd:=local_socket(1,1|0x80000|0x800,0);if fd<0 {return -1}
+    if local_connect(fd,&address,c.uint(size_of(address)))!=0 {
+        if posix.errno()!=.EINPROGRESS {posix.close(fd);return -1}
+        descriptor:=posix.pollfd{fd=fd,events={.OUT}}
+        error:c.int;length:=c.uint(size_of(error))
+        if posix.poll(&descriptor,1,100)<=0||local_sockopt(fd,1,4,&error,&length)!=0||error!=0 {posix.close(fd);return -1}
+    }
+    if !local_session_same_user(fd) {posix.close(fd);return -1}
     return fd
 }
 local_session_spawn_host :: proc(id:string,cols,rows:int,command,directory:string)->bool {
@@ -339,9 +349,12 @@ local_session_host_state :: proc(bytes:^[dynamic]u8,t:^Terminal,p:^PTY,ended:boo
     state:=Local_Session_State{cols=u32(t.cols),rows=u32(t.rows),cursor_x=u32(t.cursor_x),cursor_y=u32(t.cursor_y),history_count=u64(t.history_count),history_epoch=t.history_epoch,history_generation=t.history_generation,pid=i32(p.pid),title=t.title,title_len=u32(t.title_len),cwd=t.cwd,cwd_len=u32(t.cwd_len)}
     if t.cursor_visible {state.flags|=1};if t.alternate {state.flags|=2};if t.bracketed_paste {state.flags|=4};if t.application_cursor {state.flags|=8};if ended {state.flags|=16};if terminal_history_is_restoring(t) {state.flags|=32}
     error:=terminal_history_error(t);state.error_len=u32(copy(state.error[:],transmute([]u8)error))
-    payload:=make([dynamic]u8,0,size_of(state)+len(t.screen)*size_of(Cell));defer delete(payload)
-    append(&payload,..local_session_bytes(&state,size_of(state)));append(&payload,..local_session_bytes(raw_data(t.screen),len(t.screen)*size_of(Cell)))
-    local_session_packet(bytes,.State,payload[:])
+    // Serialize directly into the reusable outbound buffer. Screen snapshots
+    // are frequent and can be large; avoid allocating and copying a second one.
+    length:=size_of(state)+len(t.screen)*size_of(Cell)
+    history_put_u32(bytes,LOCAL_SESSION_MAGIC);history_put_u32(bytes,u32(length));history_put_u32(bytes,u32(Local_Session_Kind.State))
+    append(bytes,..local_session_bytes(&state,size_of(state)))
+    append(bytes,..local_session_bytes(raw_data(t.screen),len(t.screen)*size_of(Cell)))
 }
 local_session_host_page :: proc(bytes:^[dynamic]u8,t:^Terminal,epoch:u64,start,wanted_count,cols:int)->bool {
     if epoch!=t.history_epoch {return true}
@@ -379,8 +392,11 @@ local_session_host :: proc(args:[]string)->int {
     lock_fd:=posix.open(strings.clone_to_cstring(lock_path,context.temp_allocator),{.RDWR,.CREAT,.CLOEXEC,.NOFOLLOW},posix.mode_t{.IRUSR,.IWUSR})
     if lock_fd<0 {return 1}
     defer posix.close(lock_fd)
+    lock_info:posix.stat_t
+    if posix.fstat(lock_fd,&lock_info)!=.OK||!posix.S_ISREG(lock_info.st_mode)||lock_info.st_uid!=posix.getuid() {return 1}
     if history_flock(lock_fd,6)!=0 {return 0}
-    defer os.remove(lock_path)
+    // Keep the inode stable: unlinking a locked file lets a new host acquire a
+    // different inode while another launcher still holds the old one.
     address,valid:=local_session_address(path);if !valid {return 1}
     listener:=local_socket(1,1|0x80000|0x800,0);if listener<0 {return 1}
     defer posix.close(listener)
@@ -534,6 +550,8 @@ local_session_selfcheck_cleanup :: proc(id:string) {
         posix.close(fd)
     }
     for _ in 0..<200 {if _,error:=os.stat(path,context.temp_allocator);error==.Not_Exist {break};time.sleep(5*time.Millisecond)}
+    // This random test ID is never reused by launchers, so its lock can go too.
+    if _,error:=os.stat(path,context.temp_allocator);error==.Not_Exist {os.remove(fmt.tprintf("%s.lock",path))}
     state_root,_:=os.user_state_dir(context.temp_allocator)
     if state_root!="" {os.remove(fmt.tprintf("%s/minor-terminal/history/%s.data",state_root,id));os.remove(fmt.tprintf("%s/minor-terminal/history/%s.index",state_root,id))}
 }

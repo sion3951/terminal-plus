@@ -2,6 +2,7 @@ package main
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:io"
 import "core:os"
 import "core:path/filepath"
 import "core:strconv"
@@ -90,10 +91,21 @@ device_profiles_path :: proc()->string {
 
 device_saved_records :: proc(path:string)->[]Device_Saved_Record {
     if path=="" {return nil}
-    info,stat_error:=os.stat(path,context.temp_allocator)
+    file,open_error:=os.open(path,{.Read,.Non_Blocking})
+    if open_error!=nil {return nil}
+    defer os.close(file)
+    info,stat_error:=os.fstat(file,context.temp_allocator)
     if stat_error!=nil||info.type!=.Regular||info.size<0||info.size>DEVICE_PROFILE_FILE_LIMIT {return nil}
-    bytes,read_error:=os.read_entire_file(path,context.temp_allocator)
-    if read_error!=nil {return nil}
+    // Keep the limit effective even if the file grows while it is being read.
+    buffer:=make([]u8,DEVICE_PROFILE_FILE_LIMIT+1,context.temp_allocator)
+    used:=0
+    for used<len(buffer) {
+        n,read_error:=os.read(file,buffer[used:]);used+=n
+        if read_error!=nil&&read_error!=io.Error.EOF {return nil}
+        if n==0 {break}
+    }
+    if used>DEVICE_PROFILE_FILE_LIMIT {return nil}
+    bytes:=buffer[:used]
     records:[]Device_Saved_Record
     if json.unmarshal(bytes,&records,allocator=context.temp_allocator)!=nil {return nil}
     if len(records)>DEVICE_PROFILE_LIMIT {return records[:DEVICE_PROFILE_LIMIT]}

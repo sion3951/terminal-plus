@@ -118,7 +118,7 @@ canvas_set_font :: proc(state:^Native_Canvas_State,text:string) {
     }
     if size<=0||size>4096 {return}
     state.font_size=size;state.font_kind=.UI
-    if mono {state.font_kind=.Terminal};if bold {state.font_kind=.Terminal_Bold};if italic {state.font_kind=.Terminal_Italic};if bold&&italic {state.font_kind=.Terminal_Bold_Italic}
+    if mono {state.font_kind=.Terminal};if bold {state.font_kind=.UI_Bold if !mono else .Terminal_Bold};if italic {state.font_kind=.Terminal_Italic};if bold&&italic {state.font_kind=.Terminal_Bold_Italic}
     state.font_length=copy(state.font_text[:],transmute([]u8)text)
 }
 native_canvas_get :: proc(view:^Document_View,node:int,name:string)->Native_JS_Value {

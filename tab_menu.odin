@@ -126,49 +126,50 @@ tab_menu_scroll :: proc(a:^App,delta:int)->bool {
 tab_menu_render :: proc(a:^App) {
     if !a.menu.open {return}
     box:=tab_menu_layout(a)
-    ui_rect(a,box.x+3,box.y+4,box.w,box.h,Color{0,0,0,0.4})
-    ui_rect(a,box.x-1,box.y-1,box.w+2,box.h+2,LINE)
-    ui_rect(a,box.x,box.y,box.w,box.h,PANEL)
+    ui_glass(a,box.x,box.y,box.w,box.h)
     for visible in 0..<box.visible {
         row:=a.menu.scroll+visible
         py:=box.y+8+f32(visible)*TAB_MENU_ROW
         index:=tab_menu_item_at(row)
         if index<0 {
-            ui_rect(a,box.x+12,py+3,box.w-24,1,LINE)
-            ui_text(a,"REMOTE MACHINES",box.x+14,py+12,10,MUTED)
+            ui_rect(a,box.x+14,py+4,box.w-28,1,Color{1,1,1,0.07})
+            ui_text_mid(a,"Remote machines",box.x+16,py+19,11,box.w-32,MUTED)
             continue
         }
         if index>=tab_menu_count(a) {break}
-        if index==a.menu.selected {ui_rect(a,box.x+5,py,box.w-10,TAB_MENU_ROW,LINE)}
+        ui_row(a,box.x+6,py,box.w-12,TAB_MENU_ROW,index==a.menu.selected,false)
         label,shortcut:="",""
         color:=TEXT
+        icon:UI_Icon=.Terminal
         switch index {
         case 0:label="New terminal"
-        case 1:
-            label="Files";shortcut="Ctrl+B"
-            if a.explorer_visible {color=ACCENT;ui_rect(a,box.x+box.w-88,py+14,4,4,ACCENT)}
-        case 2:label="New window";shortcut="Ctrl+Shift+N"
+        case 1:label="Files";shortcut="Ctrl+B";icon=.Folder
+        case 2:label="New window";shortcut="Ctrl+Shift+N";icon=.Window
         case:
             profile_index:=index-3
-            if profile_index==len(a.profiles) {label="Connect via SSH…"}
-            else {label=a.profiles[profile_index].name}
+            if profile_index==len(a.profiles) {label="Connect via SSH…";icon=.Link}
+            else {label=a.profiles[profile_index].name;icon=.Server}
         }
-        label_width:=box.w-28
+        selected:=index==a.menu.selected
+        ui_icon(a,icon,box.x+16,py+8,SOFT if selected else MUTED)
+        label_width:=box.w-58
         if shortcut!="" {
             sw:=renderer_text_width(&a.renderer,shortcut,11*a.scale)/a.scale
-            ui_text(a,shortcut,box.x+box.w-14-sw,py+11,11,MUTED)
-            label_width-=sw+18
+            ui_text_mid(a,shortcut,box.x+box.w-16-sw,py+TAB_MENU_ROW/2,11,sw+2,MUTED)
+            label_width-=sw+16
         }
-        ui_fit_text(a,label,box.x+14,py+10,13,label_width,color)
+        if index==1&&a.explorer_visible {ui_dot(a,box.x+box.w-16-renderer_text_width(&a.renderer,shortcut,11*a.scale)/a.scale-12,py+TAB_MENU_ROW/2,5,SOFT)}
+        ui_text_mid(a,label,box.x+40,py+TAB_MENU_ROW/2,13,label_width,color)
     }
     if box.total>box.visible {
         track:=f32(box.visible)*TAB_MENU_ROW
         thumb:=max(16,track*f32(box.visible)/f32(box.total))
         position:=(track-thumb)*f32(a.menu.scroll)/f32(max(1,box.total-box.visible))
-        ui_rect(a,box.x+box.w-3,box.y+8+position,2,thumb,MUTED)
+        ui_scrollbar(a,box.x+box.w-6,box.y+8+position,thumb)
     }
     if a.menu.error!="" {
-        ui_rect(a,box.x+1,box.y+box.h-30,box.w-2,29,BG)
-        ui_fit_text(a,a.menu.error,box.x+12,box.y+box.h-20,11,box.w-24,Color{0.96,0.36,0.36,1})
+        y:=box.y+box.h-34
+        ui_round(a,box.x+6,y,box.w-12,28,RADIUS_ROW,Color{0.96,0.42,0.42,0.10})
+        ui_text_mid(a,a.menu.error,box.x+16,y+14,12,box.w-32,DANGER)
     }
 }

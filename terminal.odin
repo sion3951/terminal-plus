@@ -3,7 +3,7 @@ package main
 import "core:fmt"
 import "core:unicode/utf8"
 
-TERMINAL_FG :: u32(0x9b9b9b)
+TERMINAL_FG :: u32(0xd9d9d9)
 TERMINAL_BG :: u32(0x0a0a0a)
 TERMINAL_HISTORY_LIMIT :: 10000
 
@@ -51,6 +51,7 @@ Terminal :: struct {
     private:u8,
     osc:[16*1024]u8,
     osc_len:int,
+    osc_overflow:bool,
     utf_value:rune,
     utf_remaining:int,
     utf_min:rune,
@@ -431,6 +432,8 @@ terminal_metadata_copy :: proc(buffer:[]u8,value:[]u8)->int {
     return used
 }
 terminal_osc_finish :: proc(t:^Terminal) {
+    // Never interpret the retained prefix of an oversized control string.
+    if t.osc_overflow {return}
     split:=-1
     for b,i in t.osc[:t.osc_len] {if b==';' {split=i;break}}
     if split<1 {return}
@@ -501,11 +504,16 @@ terminal_feed :: proc(t:^Terminal,data:[]u8)->int {
             if count>0 {offset+=count;continue}
         }
         b:=data[offset];offset+=1
+        // CAN and SUB cancel every escape sequence, including string states.
+        if b==0x18||b==0x1a {t.parser=.Ground;t.utf_remaining=0;continue}
         if t.parser==.OSC||t.parser==.OSC_Escape {
             if b==7||(t.parser==.OSC_Escape&&b=='\\') {terminal_osc_finish(t);t.parser=.Ground;continue}
             if b==0x1b {t.parser=.OSC_Escape;continue}
             t.parser=.OSC
-            if b>=32&&t.osc_len<len(t.osc) {t.osc[t.osc_len]=b;t.osc_len+=1}
+            if b>=32 {
+                if t.osc_len<len(t.osc) {t.osc[t.osc_len]=b;t.osc_len+=1}
+                else {t.osc_overflow=true}
+            }
             continue
         }
         if t.parser==.Ignore||t.parser==.Ignore_Escape {
@@ -513,7 +521,6 @@ terminal_feed :: proc(t:^Terminal,data:[]u8)->int {
             continue
         }
         if b==0x1b {t.parser=.Escape;t.utf_remaining=0;continue}
-        if b==0x18||b==0x1a {t.parser=.Ground;t.utf_remaining=0;continue}
         if b<32||b==127 {
             switch b {
             case 8:t.cursor_x=max(0,t.cursor_x-1);t.wrap_pending=false
@@ -530,7 +537,7 @@ terminal_feed :: proc(t:^Terminal,data:[]u8)->int {
             t.parser=.Ground
             switch b {
             case '[':t.parser=.CSI;t.params={};t.param_count=1;t.private=0
-            case ']':t.parser=.OSC;t.osc_len=0
+            case ']':t.parser=.OSC;t.osc_len=0;t.osc_overflow=false
             case 'P','^','_':t.parser=.Ignore
             case '(' , ')', '*', '+':t.parser=.Charset;t.charset_g0=b=='('
             case '7':t.saved=terminal_cursor_save(t)
@@ -570,6 +577,16 @@ terminal_feed :: proc(t:^Terminal,data:[]u8)->int {
 }
 terminal_selfcheck :: proc()->bool {
     t:Terminal;terminal_init(&t,12,3);defer terminal_destroy(&t)
+    terminal_feed(&t,transmute([]u8)string("\x1b]2;cancelled\x18\x07"))
+    if t.title_len!=0||t.parser!=.Ground {return false}
+    terminal_feed(&t,transmute([]u8)string("\x1b]2;"))
+    oversized:[16*1024]u8
+    for &b in oversized {b='a'}
+    terminal_feed(&t,oversized[:])
+    terminal_feed(&t,transmute([]u8)string("\x07"))
+    if t.title_len!=0||t.parser!=.Ground {return false}
+    terminal_feed(&t,transmute([]u8)string("\x1b]2;ok\x07"))
+    if string(t.title[:t.title_len])!="ok" {return false}
     terminal_feed(&t,transmute([]u8)string("\x1b[c\x1b[>"))
     terminal_feed(&t,transmute([]u8)string("0c"))
     if string(t.replies[:])!="\x1b[?1;2c\x1b[>0;0;0c" {return false}

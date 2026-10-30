@@ -16,7 +16,7 @@ Font_Size :: struct {
     glyphs: [95]Font_Glyph,
     prewarmed: bool,
 }
-Font_Kind :: enum {UI,Terminal,Terminal_Bold,Terminal_Italic,Terminal_Bold_Italic}
+Font_Kind :: enum {UI,Terminal,Terminal_Bold,Terminal_Italic,Terminal_Bold_Italic,UI_Bold}
 FONT_SIZES :: [10]f32{12,13,14,15,16,18,20,22,24,28}
 // Documents need headings and zoomed text beyond the terminal's size settings.
 // Large faces cache only the glyphs used by the current document.
@@ -24,11 +24,17 @@ RENDER_FONT_SIZES :: [19]f32{12,13,14,15,16,18,20,22,24,28,32,36,40,48,56,64,80,
 INTER_FONT_DATA :: #load("assets/Inter-Regular.ttf")
 FONT_DATA := [Font_Kind][]u8{
     .UI=INTER_FONT_DATA,
-    .Terminal=#load("assets/AdwaitaMono-Regular.ttf"),
-    .Terminal_Bold=#load("assets/AdwaitaMono-Bold.ttf"),
-    .Terminal_Italic=#load("assets/AdwaitaMono-Italic.ttf"),
-    .Terminal_Bold_Italic=#load("assets/AdwaitaMono-BoldItalic.ttf"),
+    .UI_Bold=#load("assets/Inter-SemiBold.ttf"),
+    // Atkinson Hyperlegible Mono keeps commonly confused letters distinct
+    // (b/d/p/q, I/l/1, O/0) for dyslexic and low-vision readers.
+    .Terminal=#load("assets/AtkinsonHyperlegibleMono-Regular.ttf"),
+    .Terminal_Bold=#load("assets/AtkinsonHyperlegibleMono-Bold.ttf"),
+    .Terminal_Italic=#load("assets/AtkinsonHyperlegibleMono-Italic.ttf"),
+    .Terminal_Bold_Italic=#load("assets/AtkinsonHyperlegibleMono-BoldItalic.ttf"),
 }
+// Adwaita Mono covers arrows, braille, geometric shapes and symbols missing
+// from the primary faces before any system font is consulted.
+FALLBACK_FONT_DATA :: #load("assets/AdwaitaMono-Regular.ttf")
 FONT_COUNT :: len(RENDER_FONT_SIZES)*len(Font_Kind)
 
 FONT_UNICODE_CACHE_LIMIT :: 2048
@@ -53,14 +59,22 @@ Font_Atlas :: struct {
     faces: [Font_Kind]rawptr,
     sources: [dynamic]Font_Source,
     sources_scanned: bool,
+    fallback: rawptr,
+    fallback_attempted: bool,
 }
 
+// Texture selects the fragment path: 0 glyph atlas, 1 document page,
+// 2 rounded rectangle, 3 soft shadow, 4 antialiased capsule stroke.
 Vertex :: struct {
     pos: [2]f32,
     uv: [2]f32,
     color: [4]f32,
     texture: f32,
+    shape: [4]f32,
 }
+SHAPE_ROUND :: f32(2)
+SHAPE_SHADOW :: f32(3)
+SHAPE_STROKE :: f32(4)
 VERTEX_INITIAL_CAPACITY :: 256*1024
 ATLAS_SIZE :: 2048
 
@@ -71,6 +85,38 @@ renderer_quad :: proc(vertices: ^[dynamic]Vertex, x0,y0,x1,y1,u0,v0,u1,v1: f32, 
 }
 renderer_rect :: proc(vertices: ^[dynamic]Vertex, x,y,w,h: f32, color: [4]f32) {
     renderer_quad(vertices,x,y,x+w,y+h,0,0,0,0,color)
+}
+// Physical-pixel rounded rectangle with a vertical gradient. A positive
+// border draws only the outline; shadows spread by blur beyond the bounds.
+renderer_round :: proc(vertices: ^[dynamic]Vertex, x,y,w,h,radius: f32, top,bottom: [4]f32, border: f32=0, blur: f32=0) {
+    if w<=0||h<=0 {return}
+    hw,hh:=w/2,h/2
+    cx,cy:=x+hw,y+hh
+    pad:=blur+1
+    kind:=SHAPE_SHADOW if blur>0 else SHAPE_ROUND
+    shape:=[4]f32{hw,hh,min(radius,min(hw,hh)),blur if blur>0 else border}
+    x0,y0,x1,y1:=x-pad,y-pad,x+w+pad,y+h+pad
+    // Interpolate the gradient across the visible bounds, not the padding.
+    t0,t1:=(y0-y)/h,(y1-y)/h
+    c0,c1:=top+(bottom-top)*t0,top+(bottom-top)*t1
+    p0:=Vertex{pos={x0,y0},uv={x0-cx,y0-cy},color=c0,texture=kind,shape=shape}
+    p1:=Vertex{pos={x1,y0},uv={x1-cx,y0-cy},color=c0,texture=kind,shape=shape}
+    p2:=Vertex{pos={x1,y1},uv={x1-cx,y1-cy},color=c1,texture=kind,shape=shape}
+    p3:=Vertex{pos={x0,y1},uv={x0-cx,y1-cy},color=c1,texture=kind,shape=shape}
+    append(vertices,p0,p1,p2,p0,p2,p3)
+}
+renderer_stroke :: proc(vertices: ^[dynamic]Vertex, x0,y0,x1,y1,thickness: f32, color: [4]f32) {
+    dx,dy:=x1-x0,y1-y0
+    length:=math.sqrt(dx*dx+dy*dy);if length<=0.001 {return}
+    ux,uy:=dx/length,dy/length
+    half:=thickness/2;pad:=half+1
+    shape:=[4]f32{length,half,0,0}
+    corner :: proc(x0,y0,ux,uy,along,across:f32,color:[4]f32,shape:[4]f32)->Vertex {
+        return {pos={x0+ux*along-uy*across,y0+uy*along+ux*across},uv={along,across},color=color,texture=SHAPE_STROKE,shape=shape}
+    }
+    p0:=corner(x0,y0,ux,uy,-pad,-pad,color,shape);p1:=corner(x0,y0,ux,uy,length+pad,-pad,color,shape)
+    p2:=corner(x0,y0,ux,uy,length+pad,pad,color,shape);p3:=corner(x0,y0,ux,uy,-pad,pad,color,shape)
+    append(vertices,p0,p1,p2,p0,p2,p3)
 }
 renderer_font_size :: proc(r: ^Renderer, size: f32,kind:Font_Kind=.UI) -> ^Font_Size {
     start:=int(kind)*len(RENDER_FONT_SIZES)
@@ -83,8 +129,8 @@ renderer_font_size :: proc(r: ^Renderer, size: f32,kind:Font_Kind=.UI) -> ^Font_
     }
     return &r.fonts[nearest]
 }
-renderer_text :: proc(r: ^Renderer, vertices: ^[dynamic]Vertex, text: string, x,y,size: f32, color: [4]f32,clip_top:f32=-1e30,clip_bottom:f32=1e30) {
-    font := renderer_font_size(r,size)
+renderer_text :: proc(r: ^Renderer, vertices: ^[dynamic]Vertex, text: string, x,y,size: f32, color: [4]f32,clip_top:f32=-1e30,clip_bottom:f32=1e30,kind:Font_Kind=.UI) {
+    font := renderer_font_size(r,size,kind)
     cursor := math.round(x)
     // Public y denotes the top of the text line rather than its baseline.
     baseline := math.round(y+size*0.80)
@@ -105,8 +151,8 @@ renderer_text :: proc(r: ^Renderer, vertices: ^[dynamic]Vertex, text: string, x,
         cursor+=glyph.advance
     }
 }
-renderer_text_width :: proc(r: ^Renderer, text: string, size: f32) -> f32 {
-    font := renderer_font_size(r,size)
+renderer_text_width :: proc(r: ^Renderer, text: string, size: f32,kind:Font_Kind=.UI) -> f32 {
+    font := renderer_font_size(r,size,kind)
     width: f32
     for ch in text { width+=renderer_glyph(r,font,ch).advance }
     return width
@@ -141,7 +187,9 @@ renderer_font_pack :: proc(atlas:^Font_Atlas,width,height:int)->(x,y:int,ok:bool
         // Only the occupied rows need CPU storage or a GPU texture backing.
         rows:=max(128,len(atlas.pixels)/ATLAS_SIZE)
         for rows<atlas.y+height+2 {rows=min(rows*2,ATLAS_HEIGHT)}
-        if rows*ATLAS_SIZE>len(atlas.pixels) {resize(&atlas.pixels,rows*ATLAS_SIZE)}
+        if rows*ATLAS_SIZE>len(atlas.pixels) {
+            if resize(&atlas.pixels,rows*ATLAS_SIZE)!=nil {return 0,0,false}
+        }
     }
     x,y=atlas.x,atlas.y
     atlas.x+=width+2;atlas.row_height=max(atlas.row_height,height)
