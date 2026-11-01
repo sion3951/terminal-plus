@@ -25,6 +25,7 @@ Terminal :: struct {
     cwd:[4097]u8,
     cwd_len:int,
     cwd_changed:bool,
+    remote_session_started:bool,
     cursor_visible, alternate, bracketed_paste, application_cursor:bool,
     replies:[dynamic]u8,
     document_requests:[dynamic]string,

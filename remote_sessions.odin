@@ -17,7 +17,8 @@ remote_session_command :: proc(id:string,directory:string="")->string {
     if !session_id_valid(id) {return "printf '%s\\n' 'Invalid persistent session ID.' >&2; exit 1"}
     socket:=explorer_quote(strings.concatenate([]string{"minor-terminal-",id},context.temp_allocator))
     shell:=explorer_quote(strings.concatenate([]string{"export COLORTERM=truecolor TERM_PROGRAM=terminal-plus\n",shell_remote_command(directory)},context.temp_allocator))
-    return strings.concatenate([]string{REMOTE_SESSION_SETUP,`
+    // Emitted only after SSH authentication, before setup can create a server.
+    return strings.concatenate([]string{"printf '\\033]777;minor-session-started\\007'\n",REMOTE_SESSION_SETUP,`
 minor_tmux() { command tmux -L `,socket,` -f /dev/null "$@"; }
 if ! minor_tmux has-session -t '=terminal' 2>/dev/null; then
     # A second attaching client may win the create race. Only fail if neither

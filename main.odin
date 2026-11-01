@@ -192,9 +192,10 @@ app_close_tab :: proc(a:^App,index:int) {
     }
     if !tab.files&&tab.remote {
         if tab.remote_end!=nil {return}
-        // A configured device that has never connected owns no remote session.
-        // Restored devices can still own one after a local reboot.
-        if tab.started||tab.session_owned||tab.restore_path!="" {
+        // Failed authentication creates no remote session. A running attempt
+        // may still connect; restored/previously connected tabs may own a
+        // persistent server even after the SSH client has exited.
+        if (tab.started&&!tab.exited)||tab.session_owned||tab.restore_path!="" {
             tab.remote_end=remote_session_end_start(tab.device)
             if tab.remote_end==nil {
                 delete(tab.input_error);tab.input_error=strings.clone("Could not start ending the remote session. The tab was kept open.")
@@ -535,7 +536,7 @@ cursor_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
 }
 scroll_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
     context=runtime.default_context();a:=app_from(w);tab:=active_tab(a);if tab==nil {return}
-    if tab.media!=nil {return}
+    if tab.media!=nil {media_output_scroll(a,tab.media,y);return}
     if a.update_dialog {return}
     ctrl:=glfw.GetKey(w,glfw.KEY_LEFT_CONTROL)==glfw.PRESS||glfw.GetKey(w,glfw.KEY_RIGHT_CONTROL)==glfw.PRESS
     if document_input_scroll(a,x,y,ctrl) {return}

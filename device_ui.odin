@@ -53,7 +53,7 @@ app_start_device :: proc(a:^App,tab:^Tab)->bool {
     tab.terminal.scroll_top=0;tab.terminal.scroll_bottom=tab.terminal.rows-1
     terminal_feed(&tab.terminal,transmute([]u8)string("\x1b[?1049l\x1b[?25h\x1b[?2004l\x1b[0m\r\n"))
     terminal_feed(&tab.terminal,transmute([]u8)fmt.tprintf("Opening SSH session to %s...\r\n",device_display(tab.device)))
-    tab.started=true;tab.session_owned=true;session_touch(a)
+    tab.started=true;session_touch(a)
     if !pty_start_ssh(&tab.pty,a.cols,a.rows,tab.device.target,tab.device.port,control_id=tab.session_id,directory=tab.restore_path) {
         tab.exited=true
         terminal_feed(&tab.terminal,transmute([]u8)string("Could not start OpenSSH. Check that /usr/bin/ssh is installed.\r\nPress Enter to retry.\r\n"))

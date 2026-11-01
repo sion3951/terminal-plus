@@ -161,6 +161,7 @@ else exec "${SHELL:-/bin/sh}" -l; fi`},context.temp_allocator)
 }
 
 terminal_shell_metadata :: proc(t:^Terminal,value:[]u8) {
+    if string(value)=="minor-session-started" {t.remote_session_started=true;return}
     prefix:="minor-open;"
     directory:=strings.has_prefix(string(value),"minor-cwd;")
     if directory {prefix="minor-cwd;"}
@@ -205,6 +206,9 @@ terminal_directory_uri :: proc(t:^Terminal,value:string) {
 
 app_terminal_directory :: proc(a:^App,tab:^Tab) {
     t:=&tab.terminal
+    if tab.remote&&t.remote_session_started&&!tab.session_owned {
+        tab.session_owned=true;session_touch(a)
+    }
     if !t.cwd_changed {return}
     t.cwd_changed=false
     path:=string(t.cwd[:t.cwd_len])

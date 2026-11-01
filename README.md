@@ -23,7 +23,10 @@ inside the Vulkan window; **Esc** or **Ctrl+C** closes the viewer and returns to
 the terminal. Videos loop by default, preserving mute and volume settings, and
 use FFmpeg's audio output when available. The playback bar
 provides play/pause, replay, a draggable seek bar, elapsed/total time, ten-second
-skip buttons, mute and volume. **Space** pauses/resumes, **Left/Right** seek five
+skip buttons, mute and volume. **Audio output** (or **O**) opens a device picker with the
+system default and available outputs; choosing one keeps the current playback
+position. The picker refreshes when opened and supports scrolling and
+**Up/Down**, **Enter**, and **Esc**. **Space** pauses/resumes, **Left/Right** seek five
 seconds, **J/L** skip ten seconds, **Up/Down** adjust volume, and **M** toggles mute.
 **Home/End** seek to the beginning/end. Audio files use the same controls.
 

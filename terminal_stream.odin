@@ -33,7 +33,8 @@ app_process_output :: proc(a:^App,hold_local:bool,budget:f64=0.006) {
         done,success:=remote_session_end_poll(tab.remote_end)
         if !done {continue}
         remote_session_end_destroy(tab.remote_end);tab.remote_end=nil
-        if success {app_finish_close_tab(a,index)}
+        // Authentication may have failed while a close was pending.
+        if success||(tab.exited&&!tab.session_owned&&tab.restore_path=="") {app_finish_close_tab(a,index)}
         else {delete(tab.input_error);tab.input_error=strings.clone("Could not end the remote session. Reconnect and try closing the tab again.");a.dirty=true}
     }
     a.output_work=false

@@ -29,6 +29,15 @@ MEDIA_QUEUE_BYTES :: 256*1024*1024
 Media_Frame :: struct {pixels:[dynamic]u8,width,height:int,pts,position:f64}
 Media_View :: struct {
     worker:^thread.Thread,
+    visual:^Media_Visual,
+    output_worker:^thread.Thread,
+    output_done:bool,
+    output_devices:[dynamic]Media_Audio_Device,
+    output_error,output_backend:string,
+    output_open:bool,
+    output_selection,output_scroll:int,
+    output_name:[1024]u8,
+    output_length:int,
     source:Document_Source,
     frame:Renderer_Pixels,
     path:string,
@@ -445,26 +454,36 @@ media_worker :: proc(worker:^thread.Thread) {
         delete(probe.diagnostic);resize(&probe_args,probe_base);append(&probe_args,"-i",input);catchup=false
     }
     has_audio:=strings.contains(string(probe.diagnostic[:]),"Audio:")
-    has_video:=strings.contains(string(probe.diagnostic[:]),"Video:")
+    has_video:=media_has_video(string(probe.diagnostic[:]))
     duration:=media_duration(string(probe.diagnostic[:]))
     loop_video:=has_video&&media_kind(view.path)!=.Image
+    // Audio-only playback tees decoded audio into the native analyser.
+    visual:^Media_Visual
+    if has_audio&&!has_video {visual=media_visual_create(string(probe.diagnostic[:]),view.path)}
     delete(probe.diagnostic)
-    if media_stopping(view) {return}
+    if media_stopping(view) {media_visual_destroy(visual);return}
+    audio_output:=media_audio_output()
     sync.mutex_lock(&view.mutex)
+    view.visual=visual
+    view.output_backend=audio_output
     view.has_audio=has_audio;view.duration=duration
     view.playable=has_audio||media_kind(view.path)==.Video
     view.revision+=1
     sync.mutex_unlock(&view.mutex);media_notify(view)
     if !has_audio&&!has_video {media_message(view,"FFmpeg found no playable audio or video stream.");return}
     pixels:[dynamic]u8;defer delete(pixels)
-    audio_output:=media_audio_output()
     audio,hardware:=has_audio,true
+    output_command:u64
     warning:=""
     for !media_stopping(view) {
         sync.mutex_lock(&view.mutex)
         command:=view.command_revision;paused:=view.paused;finished:=view.finished
         position:=view.position;volume:=view.volume;audio_revision:=view.audio_revision;if view.muted||paused {volume=0}
+        output_target:=string(view.output_name[:view.output_length]);if output_target=="" {output_target="default"}
+        output_device:=strings.clone(output_target)
         sync.mutex_unlock(&view.mutex)
+        defer delete(output_device)
+        if command!=output_command {audio=has_audio;warning="";output_command=command}
         // Keep the final frame and wait for replay.
         if finished {time.sleep(20*time.Millisecond);continue}
         arguments:=make([dynamic]string)
@@ -494,7 +513,8 @@ media_worker :: proc(worker:^thread.Thread) {
             append(&arguments,"-map","0:a:0","-vn","-sn","-dn","-af",audio_filter,
                 "-c:a","pcm_s16le","-ac","2","-ar","48000")
             if audio_output=="pulse" {append(&arguments,"-buffer_duration","120","-prebuf","0")}
-            append(&arguments,"-f",audio_output,"default")
+            append(&arguments,"-f",audio_output,output_device)
+            if visual!=nil {media_visual_output(&arguments)}
         }
         process:Media_Process
         spawned:=media_spawn(&process,arguments[:],interactive);delete(arguments)
@@ -517,14 +537,15 @@ media_worker :: proc(worker:^thread.Thread) {
             }
         } else {
             media_message(view,"Playing audio")
-            for media_read(view,&process,byte[:]) {}
+            if visual!=nil {media_visual_drain(view,visual,&process,position,command)}
+            else {for media_read(view,&process,byte[:]) {}}
         }
         status:=media_process_finish(view,&process)
         diagnostic:=strings.trim_space(string(process.diagnostic[:]))
         if media_stopping(view) {delete(process.diagnostic);return}
         if media_command_changed(&process) {delete(process.diagnostic);continue}
         if count==0&&status!=0&&audio&&has_video {
-            audio=false;warning="Audio output unavailable; video continues."
+            audio=false;warning="Audio output unavailable; choose another output. Video continues."
             delete(process.diagnostic);continue
         }
         if count==0&&status!=0&&hardware&&has_video {
@@ -576,6 +597,9 @@ media_view_destroy :: proc(view:^Media_View) {
     if view==nil {return}
     sync.atomic_store(&view.stopping,true);sync.cond_signal(&view.queue_cond);document_source_cancel(&view.source)
     if view.worker!=nil {thread.join(view.worker);thread.destroy(view.worker)}
+    media_visual_destroy(view.visual);view.visual=nil
+    if view.output_worker!=nil {thread.join(view.output_worker);thread.destroy(view.output_worker)}
+    media_audio_devices_destroy(&view.output_devices);delete(view.output_error)
     document_source_close(&view.source);renderer_pixels_destroy(&view.frame)
     for &frame in view.frames {delete(frame.pixels)}
     if view.trace {fmt.printf("Media playback: decoded=%d presented=%d skipped=%d worst_lateness=%.2fms\n",view.decoded,view.presented,view.skipped,view.worst_lateness*1000)}
@@ -586,7 +610,7 @@ media_close :: proc(a:^App) {
     media_view_destroy(tab.media);tab.media=nil;a.dirty=true
     if tab.files {explorer_return_terminal(a)}
 }
-Media_Control :: enum {None,Play,Back,Forward,Mute,Volume,Seek,Close}
+Media_Control :: enum {None,Play,Back,Forward,Mute,Volume,Seek,Output,Close}
 Media_Controls :: struct {bar:Explorer_Rect,items:[Media_Control]Explorer_Rect,time:Explorer_Rect}
 // Controls float on a glass panel above the bottom edge of the viewer.
 media_controls :: proc(a:^App,playable:bool)->Media_Controls {
@@ -598,6 +622,7 @@ media_controls :: proc(a:^App,playable:bool)->Media_Controls {
     box:=Media_Controls{bar={x,y,w,h}}
     box.items[.Close]={x+w-42,y+11,30,30}
     if playable {
+        box.items[.Output]={x+w-188,y+11,136,30}
         box.items[.Seek]={x+18,y+46,max(1,w-36),18}
         row:=y+70
         box.items[.Back]={x+14,row,34,34};box.items[.Play]={x+52,row,34,34};box.items[.Forward]={x+90,row,34,34}
@@ -633,6 +658,7 @@ media_control_locked :: proc(view:^Media_View,control:Media_Control) {
                 if view.progress_seen {view.progress_tick=time.tick_add(view.progress_tick,time.tick_diff(view.pause_tick,now))}
                 media_decoder_pause_locked(view,false)
                 if view.has_audio {view.audio_revision+=1}
+                if view.visual!=nil {media_visual_resume_locked(view.visual,view.pause_tick,now)}
             }
             sync.cond_signal(&view.queue_cond)
         }
@@ -645,6 +671,11 @@ media_control_locked :: proc(view:^Media_View,control:Media_Control) {
 }
 media_view_key :: proc(a:^App,key,mods:c.int,action:c.int=glfw.PRESS)->bool {
     tab:=active_tab(a);if tab==nil||tab.media==nil {return false}
+    if media_output_key(a,tab.media,key,action) {return true}
+    if key==glfw.KEY_O&&mods==0 {
+        if action!=glfw.REPEAT {media_output_open(a,tab.media)}
+        return true
+    }
     if key==glfw.KEY_ESCAPE||(key==glfw.KEY_C&&mods&glfw.MOD_CONTROL!=0) {media_close(a);return true}
     view:=tab.media
     if action==glfw.REPEAT&&(key==glfw.KEY_SPACE||key==glfw.KEY_K||key==glfw.KEY_M) {return true}
@@ -670,6 +701,7 @@ media_view_key :: proc(a:^App,key,mods:c.int,action:c.int=glfw.PRESS)->bool {
 media_view_mouse :: proc(a:^App,button,action:c.int,x,y:f32)->bool {
     tab:=active_tab(a);if tab==nil||tab.media==nil {return false}
     view:=tab.media
+    if media_output_mouse(a,view,button,action,x,y) {return true}
     if y<HEADER&&view.drag==.None {return false}
     if button!=glfw.MOUSE_BUTTON_LEFT {return true}
     sync.mutex_lock(&view.mutex)
@@ -689,6 +721,7 @@ media_view_mouse :: proc(a:^App,button,action:c.int,x,y:f32)->bool {
     }
     sync.mutex_unlock(&view.mutex)
     if action==glfw.PRESS&&control==.Close {media_close(a)}
+    if action==glfw.PRESS&&control==.Output {media_output_open(a,view)}
     a.dirty=true;return true
 }
 media_view_cursor :: proc(a:^App,x,y:f32)->bool {
@@ -752,6 +785,9 @@ media_view_render :: proc(a:^App,view:^Media_View) {
     width,height:=f32(r.width)/a.scale,f32(r.height)/a.scale
     sync.mutex_lock(&view.mutex)
     message:=strings.clone(string(view.message[:view.message_length]),context.temp_allocator)
+    has_audio:=view.has_audio
+    // The audio analyser owns view.frame for its spectrogram texture.
+    analysing:=view.visual!=nil
     playable,paused,finished,muted:=view.playable,view.paused,view.finished,view.muted
     position,duration,volume:=view.position,view.duration,view.volume
     playing:=playable&&!paused&&!finished&&view.drag==.None&&duration>0
@@ -761,7 +797,7 @@ media_view_render :: proc(a:^App,view:^Media_View) {
     if view.drag==.Volume {volume=view.drag_fraction}
     box:=media_controls(a,playable)
     ui_rect(a,0,HEADER,width,max(0,height-HEADER),Color{0,0,0,1})
-    sync.mutex_lock(&view.frame.mutex);ready:=view.frame.pixels!=nil;sync.mutex_unlock(&view.frame.mutex)
+    sync.mutex_lock(&view.frame.mutex);ready:=view.frame.pixels!=nil&&!analysing;sync.mutex_unlock(&view.frame.mutex)
     if ready {
         r.page_source=&view.frame
         if !renderer_page_prepare(r) {glfw.SetWindowShouldClose(r.window,true);return}
@@ -773,13 +809,13 @@ media_view_render :: proc(a:^App,view:^Media_View) {
         renderer_quad(&a.vertices,x,y,x+w,y+h,0,0,1,1,Color{1,1,1,1})
         for &vertex in a.vertices[start:] {vertex.texture=1}
     }
-    if !ready {ui_text_mid(a,message,24,HEADER+32,14,width-48,SOFT)}
+    if !ready&&!media_visual_render(a,view,box,&position) {ui_text_mid(a,message,24,HEADER+32,14,width-48,SOFT)}
     bar:=box.bar
     ui_shadow(a,bar.x,bar.y,bar.w,bar.h,16,28,12,Color{0,0,0,0.6})
     ui_round_gradient(a,bar.x,bar.y,bar.w,bar.h,16,Color{0.14,0.14,0.15,0.80},Color{0.08,0.08,0.085,0.86})
     ui_round_border(a,bar.x,bar.y,bar.w,bar.h,16,GLASS_RIM_TOP,GLASS_RIM_BOTTOM)
     mx,my:=glfw.GetCursorPos(r.window);hover:=media_control_at(box,f32(mx),f32(my))
-    ui_title(a,filepath.base(view.path),bar.x+18,bar.y+26,13,bar.w-74)
+    ui_title(a,filepath.base(view.path),bar.x+18,bar.y+26,13,bar.w-(210 if has_audio else 74))
     close:=box.items[.Close]
     ui_control(a,close.x,close.y,close.w,close.h,.Ghost,hover==.Close)
     ui_icon_close(a,close.x+close.w/2,close.y+close.h/2,8,TEXT if hover==.Close else SOFT)
@@ -788,6 +824,12 @@ media_view_render :: proc(a:^App,view:^Media_View) {
         title_w:=renderer_text_width(r,filepath.base(view.path),13*a.scale,.UI_Bold)/a.scale
         ui_text_mid(a,hint,bar.x+32+title_w,bar.y+26,12,bar.w-title_w-90,MUTED)
         return
+    }
+    if has_audio {
+        output:=box.items[.Output]
+        ui_control(a,output.x,output.y,output.w,output.h,.Outline,hover==.Output,active=view.output_open)
+        ui_text_mid(a,"Audio output",output.x+12,output.y+15,12,output.w-36,SOFT)
+        ui_icon_chevron(a,output.x+output.w-15,output.y+15,6,SOFT,3 if view.output_open else 2)
     }
     for control in ([4]Media_Control{.Play,.Back,.Forward,.Mute}) {
         rect:=box.items[control]
@@ -815,7 +857,11 @@ media_view_render :: proc(a:^App,view:^Media_View) {
     if message!="" {hint=message}
     hint_w:=renderer_text_width(r,hint,11*a.scale)/a.scale
     title_w:=renderer_text_width(r,filepath.base(view.path),13*a.scale,.UI_Bold)/a.scale
-    if bar.w-title_w-90>hint_w {ui_text_mid(a,hint,bar.x+bar.w-56-hint_w,bar.y+26,11,hint_w+2,MUTED)}
+    if !has_audio&&bar.w-title_w-90>hint_w {ui_text_mid(a,hint,bar.x+bar.w-56-hint_w,bar.y+26,11,hint_w+2,MUTED)}
+    if has_audio&&message!=""&&message!="Playing audio"&&message!="Finished" {
+        ui_text_mid(a,message,bar.x+18,bar.y-14,11,bar.w-36,MUTED)
+    }
+    media_output_render(a,view,box)
 }
 media_slider :: proc(a:^App,rect:Explorer_Rect,fraction:f32,active,knob:bool) {
     // The fill end and knob keep subpixel positions so movement stays smooth.
@@ -888,6 +934,7 @@ media_sanity :: proc(path:string)->bool {
         media_view_key(a,glfw.KEY_M,0);controls_ok=media_wait_audio(view)
         media_view_key(a,glfw.KEY_M,0);media_view_key(a,glfw.KEY_DOWN,0)
         controls_ok=media_wait_audio(view)&&controls_ok
+        controls_ok=media_visual_check(view)&&controls_ok
     }
     if ready&&media_kind(path)==.Video {
         sync.mutex_lock(&view.mutex);duration:=view.duration;sync.mutex_unlock(&view.mutex)
