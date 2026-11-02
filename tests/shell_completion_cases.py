@@ -1,4 +1,4 @@
-"""Focused Bash programmable-completion comparisons for check-shell-compat.py."""
+"""Focused Bash programmable-completion comparisons for shell-compat.py."""
 
 CASES = {
     "completion-wordlist-no-pathname-expansion": r'''touch alpha.txt; compgen -W '*.txt' -- '' ''',

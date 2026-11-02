@@ -1,5 +1,5 @@
 /build/
-/shaders/*.spv
+/src/shaders/*.spv
 /.update-signing/
 __pycache__/
 

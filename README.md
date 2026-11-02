@@ -1,47 +1,50 @@
 # Terminal+
 
-A fast Linux terminal with Vulkan rendering, persistent local and SSH sessions,
-a file browser, and embedded Markdown/HTML previews. Requires native Wayland.
+A fast, Vulkan-rendered terminal for Linux on native Wayland.
 
-[Download the AppImage](https://github.com/sion3951/terminal-plus/releases/latest),
-then install it:
+- **Persistent sessions** for local and SSH tabs
+- **Built-in shell**: a native Bash-compatible shell, so Bash isn't required
+- **File browser**
+- **Document viewer**: Markdown and HTML rendered in the window, no browser engine
+- **Media viewer**: images, video and audio via FFmpeg
+- **Signed auto-updates**: keep the AppImage somewhere writable
+
+## Install
+
+[Download the latest AppImage](https://github.com/sion3951/terminal-plus/releases/latest), then:
 
 ```sh
 chmod +x terminal+-*.AppImage
-./terminal+-*.AppImage --install
+./terminal+-*.AppImage --install   # adds the app menu entry and `terminal+` command
 terminal+
 ```
 
-Linux x86_64; requires a Vulkan driver. Local tabs use the native Odin shell
-compiled into Terminal+; Bash is not required. `~/.local/bin` must be on your PATH.
-The [native shell](BUILD.md#native-shell) supports Bash-style scripts, startup files,
-arrays, job control, completion and history. Compatibility is still being verified.
-Image and video viewing requires FFmpeg (5 or newer), with no ffprobe or ffplay
-requirement. In a new terminal tab, enter an image/video filename directly or run
-`tview 'path/to/file.mp4'`. You can also open media from **Files**. Frames render
-inside the Vulkan window; **Esc** or **Ctrl+C** closes the viewer and returns to
-the terminal. Videos loop by default, preserving mute and volume settings, and
-use FFmpeg's audio output when available. The playback bar
-provides play/pause, replay, a draggable seek bar, elapsed/total time, ten-second
-skip buttons, mute and volume. **Audio output** (or **O**) opens a device picker with the
-system default and available outputs; choosing one keeps the current playback
-position. The picker refreshes when opened and supports scrolling and
-**Up/Down**, **Enter**, and **Esc**. **Space** pauses/resumes, **Left/Right** seek five
-seconds, **J/L** skip ten seconds, **Up/Down** adjust volume, and **M** toggles mute.
-**Home/End** seek to the beginning/end. Audio files use the same controls.
+**Requires:** Linux x86_64, a Wayland compositor, a Vulkan driver, and
+`~/.local/bin` on your `PATH`. FFmpeg 5+ is optional and enables media viewing.
 
-Markdown/HTML previews use native Odin parsing, CSS layout, JavaScript, and Vulkan
-rendering, including flex/grid, positioning, Canvas 2D, modules, async fetch,
-form submission and network navigation. Open `examples/html/index.html` from a
-new terminal tab or Files to try the included layout, forms, scripts, canvas and
-media pages. Each page explains the expected result.
+## Usage
 
-Full browser compatibility remains incomplete. CSS transforms/animations,
-complete web APIs, file uploads, advanced canvas/WebGL and some HTML/JavaScript
-standards behavior remain unsupported. Script and resource errors appear in
-the document viewer.
+To view a file, type its name in a tab (or run `tview <file>`), or open it from **Files**.
 
-Updates download automatically, verify signed releases, and install when you choose
-**Update and restart**. Keep the AppImage somewhere you can write to.
+| Media viewer key | Action |
+| --- | --- |
+| Space | Play / pause |
+| ← / → | Seek 5 s |
+| J / L | Skip 10 s |
+| ↑ / ↓ | Volume |
+| M | Mute |
+| O | Choose audio output |
+| Esc / Ctrl+C | Close viewer |
 
-Build from source: see [BUILD.md](BUILD.md). [MIT license](LICENSE).
+To try the document engine, open `examples/html/index.html`.
+
+## Documentation
+
+- [Building from source](docs/building.md)
+- [Native shell](docs/native-shell.md)
+- [Document engine](docs/document-engine.md)
+- [Releasing](docs/releasing.md)
+
+## License
+
+[MIT](LICENSE)

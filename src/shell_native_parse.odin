@@ -219,8 +219,9 @@ native_shell_tokens :: proc(source:string)->(tokens:[dynamic]Native_Shell_Token,
             i+=2;quote:u8;found:=false
             for i<len(source) {
                 ch:=source[i]
-                if ch=='\\' {i+=2;continue}
+                // Backslashes are literal inside single quotes.
                 if quote=='\'' {if ch=='\'' {quote=0};i+=1;continue}
+                if ch=='\\' {i+=2;continue}
                 if ch=='$'&&i+1<len(source)&&(source[i+1]=='('||source[i+1]=='{') {
                     end:int;scan_error:string
                     if source[i+1]=='(' {end,scan_error=native_shell_substitution_end(source,i)} else {end,scan_error=native_shell_parameter_end(source,i,0,quote=='"')}

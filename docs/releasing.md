@@ -24,7 +24,7 @@ git push origin v0.1.1
 Prerelease tags do not enter the stable update channel. A failed draft can be
 resumed with the workflow's manual tag input; published releases are immutable.
 
-For a local build, install the dependencies in [BUILD.md](BUILD.md), then run
+For a local build, install the dependencies in [building.md](building.md), then run
 `make -j VERSION=0.1.1 appimage`. Sign its package with
 `scripts/update-manifest.py --tag v0.1.1 --packages build/packages --private-key .update-signing/private.pem`.
 

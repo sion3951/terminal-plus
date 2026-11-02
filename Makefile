@@ -1,11 +1,12 @@
 ODIN ?= odin
 GLSLC ?= glslc
 VERSION ?= $(shell cat VERSION)
-SOURCES := $(wildcard *.odin updater_security/*.odin)
+SOURCES := $(wildcard src/*.odin src/updater_security/*.odin)
+SHADERS := src/shaders/ui.vert.spv src/shaders/ui.frag.spv
 .PHONY: all run check clean appimage FORCE
 all: build/terminal
 
-shaders/%.spv: shaders/%
+src/shaders/%.spv: src/shaders/%
 	$(GLSLC) $< -o $@
 
 build/version: FORCE
@@ -14,9 +15,9 @@ build/version: FORCE
 
 FORCE:
 
-build/terminal: build/version VERSION Makefile scripts/update-install.sh $(SOURCES) shaders/ui.vert.spv shaders/ui.frag.spv $(wildcard assets/*.ttf) assets/update-public-key.hex
+build/terminal: build/version VERSION Makefile scripts/update-install.sh $(SOURCES) $(SHADERS) $(wildcard assets/*.ttf) assets/update-public-key.hex
 	mkdir -p build
-	$(ODIN) build . -out:$@.next -o:speed -vet -define:DEFAULT_TEMP_ALLOCATOR_BACKING_SIZE=65536 -define:TERMINAL_PLUS_VERSION=$(VERSION)
+	$(ODIN) build src -out:$@.next -o:speed -vet -define:DEFAULT_TEMP_ALLOCATOR_BACKING_SIZE=65536 -define:TERMINAL_PLUS_VERSION=$(VERSION)
 	mv -f $@.next $@
 
 run: all
@@ -30,4 +31,4 @@ appimage: all
 
 clean:
 	rm -rf build
-	rm -f shaders/*.spv
+	rm -f src/shaders/*.spv

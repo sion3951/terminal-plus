@@ -1571,10 +1571,9 @@ native_shell_wait_builtin :: proc(shell:^Native_Shell,args:[]string)->int {
     return result
 }
 
-native_shell_alias_source :: proc(shell:^Native_Shell,source:string,active:map[string]bool,depth:int=0)->(string,string) {
+native_shell_alias_source :: proc(shell:^Native_Shell,source:string,active:^map[string]bool,depth:int=0)->(string,string) {
     if (!shell.compat.shopts["expand_aliases"]&&!shell.compat.options["posix"])||len(shell.compat.aliases)==0 {return source,""}
     if depth>=64 {return "","alias expansion nesting limit reached"}
-    active_values:=active
     tokens,error:=native_shell_tokens(source)
     if error!="" {return "",error}
     output:=make([dynamic]u8);position:=0;command_word:=true;next_word:=false;skip_for:=false
@@ -1585,11 +1584,12 @@ native_shell_alias_source :: proc(shell:^Native_Shell,source:string,active:map[s
         eligible:=(command_word||next_word)&&!redirect_operand&&!io_number
         if shell.compat.options["posix"]&&command_word&&native_shell_command_keyword(token.raw) {eligible=false}
         next_word=false
-        if eligible&&!token.operator&&!active[token.raw] {
+        if eligible&&!token.operator&&!active^[token.raw] {
             if alias,exists:=shell.compat.aliases[token.raw];exists {
-                active_values[token.raw]=true
+                // Share the map header too: insertion can allocate or grow it.
+                active^[token.raw]=true
                 expanded,expand_error:=native_shell_alias_source(shell,alias,active,depth+1)
-                delete_key(&active_values,token.raw)
+                delete_key(active,token.raw)
                 if expand_error!="" {return "",expand_error}
                 replacement=expanded
                 next_word=len(alias)>0&&(alias[len(alias)-1]==' '||alias[len(alias)-1]=='\t')
@@ -1625,7 +1625,8 @@ native_shell_execute :: proc(shell:^Native_Shell,source:string,syntax_error:^boo
     defer vmem.arena_destroy(&arena)
     context.allocator=vmem.arena_allocator(&arena)
     context.temp_allocator=context.allocator
-    expanded,alias_error:=native_shell_alias_source(shell,source,make(map[string]bool))
+    active_aliases:=make(map[string]bool)
+    expanded,alias_error:=native_shell_alias_source(shell,source,&active_aliases)
     if alias_error!="" {if syntax_error!=nil {syntax_error^=true};fmt.eprintf("terminal+: %s\n",alias_error);shell.status=2;return 2}
     program,error:=native_shell_parse(expanded)
     if error!="" {if syntax_error!=nil {syntax_error^=true};native_shell_diagnostic(shell,error);shell.status=2;if shell.compat.options["posix"]&&!shell.interactive {shell.exiting=true;shell.exit_status=2};return 2}

@@ -302,6 +302,7 @@ native_shell_conditional_tokens :: proc(source:string)->(tokens:[dynamic]string,
         quote:u8
         for i<len(source) {
             ch:=source[i]
+            if quote=='\'' {if ch=='\'' {quote=0};i+=1;continue}
             if ch=='\\' {i+=2;continue}
             if quote!=0 {if ch==quote {quote=0};i+=1;continue}
             if ch=='\''||ch=='"' {quote=ch;i+=1;continue}

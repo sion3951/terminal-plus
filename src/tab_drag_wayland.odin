@@ -4,6 +4,7 @@ package main
 import "base:runtime"
 import "core:c"
 import "core:fmt"
+import "core:time"
 import posix "core:sys/posix"
 import glfw "vendor:glfw"
 
@@ -35,6 +36,13 @@ Drag_Wayland :: struct {
     occupied:^App,
     offers:[dynamic]Drag_WL_Offer,
     active,accepted:bool,
+    // Pointer position as last reported to our own wl_pointer. enters counts
+    // wl_pointer.enter events so a drop only trusts an enter sent after it.
+    entered:^App,
+    enter_x,enter_y:f64,
+    enters,drag_enters:u64,
+    resolving:bool,
+    resolve_started:time.Tick,
 }
 drag_wayland:Drag_Wayland
 
@@ -49,7 +57,7 @@ drag_wl_offer_destroy :: proc(proxy:rawptr) {
 }
 tab_drag_wayland_cancel :: proc() {
     state:=&drag_wayland
-    state.active=false;state.occupied=nil
+    state.active=false;state.resolving=false;state.occupied=nil
     drag_wl_offer_destroy(state.offer)
     if state.source!=nil {drag_wl_request(state.source,1,true);state.source=nil}
 }
@@ -99,12 +107,24 @@ drag_wl_seat_capabilities :: proc "c" (data,seat:rawptr,capabilities:u32) {
 }
 drag_wl_seat_name :: proc "c" (data,seat:rawptr,name:cstring) {}
 drag_wl_pointer_enter :: proc "c" (data,pointer:rawptr,serial:u32,surface:rawptr,x,y:i32) {
-    context=runtime.default_context();drag_wayland.pointer_surface=surface
+    context=runtime.default_context();state:=&drag_wayland
+    state.pointer_surface=surface;state.entered=nil;state.enters+=1
+    for a in workspace_windows {
+        if !glfw.WindowShouldClose(a.renderer.window)&&glfw.GetWaylandWindow(a.renderer.window)==surface {
+            state.entered=a;state.enter_x=f64(x)/256;state.enter_y=f64(y)/256;break
+        }
+    }
+    // Compositors withhold pointer focus during drag-and-drop, so an enter
+    // means the drag ended even if neither drop nor cancelled reached us.
+    if state.active {drag_wl_begin_resolve()}
 }
 drag_wl_pointer_leave :: proc "c" (data,pointer:rawptr,serial:u32,surface:rawptr) {
-    context=runtime.default_context();drag_wayland.pointer_surface=nil
+    context=runtime.default_context();drag_wayland.pointer_surface=nil;drag_wayland.entered=nil
 }
-drag_wl_pointer_motion :: proc "c" (data,pointer:rawptr,time:u32,x,y:i32) {}
+drag_wl_pointer_motion :: proc "c" (data,pointer:rawptr,time:u32,x,y:i32) {
+    context=runtime.default_context()
+    if drag_wayland.entered!=nil {drag_wayland.enter_x=f64(x)/256;drag_wayland.enter_y=f64(y)/256}
+}
 drag_wl_pointer_button :: proc "c" (data,pointer:rawptr,serial,time,button,state:u32) {
     context=runtime.default_context()
     if button!=0x110 {return} // Linux BTN_LEFT, rather than GLFW's button index.
@@ -173,8 +193,25 @@ drag_wl_device_drop :: proc "c" (data,device:rawptr) {
         drag:=tab_drag
         workspace_request_drop(drag.source,drag.tab,drag.target,drag.insertion,drag.drop_mode,drag.onto,drag.group_id,drag.to_group,drag.onto_group)
         drag_wl_request(state.offer,3) // finish only an accepted, negotiated drop.
+        tab_drag_cancel()
+        return
     }
-    tab_drag_cancel()
+    // Not over a tab strip: decide from where the pointer lands instead.
+    drag_wl_begin_resolve()
+}
+// The drag ended without one of our data devices accepting it. Hyprland (and
+// any compositor that sends drag events to only the first wl_data_device of a
+// client) never reports drag motion here: GLFW owns that device and ignores
+// non-file offers, so every drop is cancelled. The compositor then re-enters
+// the surface under the pointer; tab_drag_poll resolves the drop from that.
+drag_wl_begin_resolve :: proc() {
+    state:=&drag_wayland
+    if !state.active||!tab_drag.armed {tab_drag_cancel();return}
+    drag_wl_offer_destroy(state.offer)
+    if state.source!=nil {drag_wl_request(state.source,1,true);state.source=nil}
+    state.active=false;state.occupied=nil
+    state.resolving=true;state.resolve_started=time.tick_now()
+    tab_drag_update_target(tab_drag.screen_x,tab_drag.screen_y,nil)
 }
 drag_wl_device_selection :: proc "c" (data,device,offer:rawptr) {
     context=runtime.default_context()
@@ -187,9 +224,15 @@ drag_wl_source_send :: proc "c" (data,source:rawptr,mime:cstring,fd:c.int) {
     // Transfers use the live tab pointer within this process, never shell data.
     posix.close(posix.FD(fd))
 }
-drag_wl_source_done :: proc "c" (data,source:rawptr) {
-    context=runtime.default_context();tab_drag_cancel()
+drag_wl_source_cancelled :: proc "c" (data,source:rawptr) {
+    context=runtime.default_context()
+    if !drag_wayland.resolving {drag_wl_begin_resolve()}
 }
+// A drop accepted by our own data device already completed in
+// drag_wl_device_drop. Otherwise dnd_finished is not a drop: GLFW 3.5 accepts
+// a non-file offer with NULL and destroys it on enter, and Hyprland answers the
+// destroyed offer with dnd_finished while the drag carries on.
+drag_wl_source_finished :: proc "c" (data,source:rawptr) {}
 drag_wl_source_drop :: proc "c" (data,source:rawptr) {}
 drag_wl_source_action :: proc "c" (data,source:rawptr,action:u32) {}
 
@@ -230,9 +273,9 @@ Drag_WL_Device_Listener :: struct {
 Drag_WL_Source_Listener :: struct {
     target:type_of(drag_wl_source_target),
     send:type_of(drag_wl_source_send),
-    cancelled:type_of(drag_wl_source_done),
+    cancelled:type_of(drag_wl_source_cancelled),
     drop:type_of(drag_wl_source_drop),
-    finished:type_of(drag_wl_source_done),
+    finished:type_of(drag_wl_source_finished),
     action:type_of(drag_wl_source_action),
 }
 drag_wl_registry_listener := Drag_WL_Registry_Listener{drag_wl_registry_global,drag_wl_registry_remove}
@@ -240,7 +283,7 @@ drag_wl_seat_listener := Drag_WL_Seat_Listener{drag_wl_seat_capabilities,drag_wl
 drag_wl_pointer_listener := Drag_WL_Pointer_Listener{drag_wl_pointer_enter,drag_wl_pointer_leave,drag_wl_pointer_motion,drag_wl_pointer_button,drag_wl_pointer_axis,drag_wl_pointer_frame,drag_wl_pointer_axis_source,drag_wl_pointer_axis_stop,drag_wl_pointer_axis_discrete}
 drag_wl_offer_listener := Drag_WL_Offer_Listener{drag_wl_offer_mime,drag_wl_offer_source_actions,drag_wl_offer_action}
 drag_wl_device_listener := Drag_WL_Device_Listener{drag_wl_device_offer,drag_wl_device_enter,drag_wl_device_leave,drag_wl_device_motion,drag_wl_device_drop,drag_wl_device_selection}
-drag_wl_source_listener := Drag_WL_Source_Listener{drag_wl_source_target,drag_wl_source_send,drag_wl_source_done,drag_wl_source_drop,drag_wl_source_done,drag_wl_source_action}
+drag_wl_source_listener := Drag_WL_Source_Listener{drag_wl_source_target,drag_wl_source_send,drag_wl_source_cancelled,drag_wl_source_drop,drag_wl_source_finished,drag_wl_source_action}
 
 tab_drag_wayland_init :: proc() {
     if drag_wayland.registry!=nil {return}
@@ -272,7 +315,7 @@ tab_drag_wayland_start :: proc()->bool {
     wl_proxy_marshal_flags(state.source,0,nil,3,0,DRAG_WL_MIME)
     wl_proxy_marshal_flags(state.source,2,nil,3,0,u32(2))
     wl_proxy_marshal_flags(state.device,0,nil,3,0,state.source,state.press_surface,rawptr(nil),state.serial)
-    state.active=true
+    state.active=true;state.drag_enters=state.enters
     wl_display_flush(state.display)
     return true
 }

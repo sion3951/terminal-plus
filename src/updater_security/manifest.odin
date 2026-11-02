@@ -5,7 +5,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 
-PUBLIC_KEY :: string(#load("../assets/update-public-key.hex"))
+PUBLIC_KEY :: string(#load("../../assets/update-public-key.hex"))
 REPOSITORY :: "https://github.com/sion3951/terminal-plus/releases/download/"
 MAX_PACKAGE :: i64(1024*1024*1024)
 Asset :: struct {os,arch,kind,name,sha256,url:string,size:i64}

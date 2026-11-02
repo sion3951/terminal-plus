@@ -330,8 +330,17 @@ media_frame :: proc(view:^Media_View,process:^Media_Process,pixels:^[dynamic]u8)
 }
 media_audio_output :: proc()->string {
     if os.get_env("PULSE_SERVER",context.temp_allocator)!="" {return "pulse"}
-    runtime:=os.get_env("XDG_RUNTIME_DIR",context.temp_allocator)
-    if runtime!="" {if _,error:=os.stat(fmt.tprintf("%s/pulse/native",runtime),context.temp_allocator);error==nil {return "pulse"}}
+    // PipeWire and PulseAudio both serve the Pulse protocol here. Check every
+    // location libpulse would try so a launcher with a trimmed environment
+    // does not fall back to raw ALSA PCMs.
+    sockets:=[3]string{}
+    if path:=os.get_env("PULSE_RUNTIME_PATH",context.temp_allocator);path!="" {sockets[0]=fmt.tprintf("%s/native",path)}
+    if runtime:=os.get_env("XDG_RUNTIME_DIR",context.temp_allocator);runtime!="" {sockets[1]=fmt.tprintf("%s/pulse/native",runtime)}
+    sockets[2]=fmt.tprintf("/run/user/%d/pulse/native",posix.getuid())
+    for socket in sockets {
+        if socket=="" {continue}
+        if _,error:=os.stat(socket,context.temp_allocator);error==nil {return "pulse"}
+    }
     return "alsa"
 }
 media_queue_frame :: proc(view:^Media_View,process:^Media_Process,pixels:^[dynamic]u8,width,height:int)->bool {

@@ -61,7 +61,7 @@ updater_platform_install :: proc(target:^Update_Target,package_path,stage:string
     // Recheck the bytes immediately before handing the private stage to our helper.
     if !updater_verify_package(package_path,target.size,target.sha256) {return false,"The staged update changed. Check for updates again."}
     helper:=fmt.tprintf("%s/update-install.sh",stage)
-    if os.write_entire_file(helper,#load("scripts/update-install.sh"),{.Read_User,.Write_User})!=nil||!updater_private_path(helper,false) {
+    if os.write_entire_file(helper,#load("../scripts/update-install.sh"),{.Read_User,.Write_User})!=nil||!updater_private_path(helper,false) {
         return false,"Could not stage the portable update helper."
     }
     log,error_log:=os.open(fmt.tprintf("%s/install.log",stage),{.Write,.Create,.Trunc},{.Read_User,.Write_User})

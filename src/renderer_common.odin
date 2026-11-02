@@ -21,20 +21,20 @@ FONT_SIZES :: [10]f32{12,13,14,15,16,18,20,22,24,28}
 // Documents need headings and zoomed text beyond the terminal's size settings.
 // Large faces cache only the glyphs used by the current document.
 RENDER_FONT_SIZES :: [19]f32{12,13,14,15,16,18,20,22,24,28,32,36,40,48,56,64,80,96,160}
-INTER_FONT_DATA :: #load("assets/Inter-Regular.ttf")
+INTER_FONT_DATA :: #load("../assets/Inter-Regular.ttf")
 FONT_DATA := [Font_Kind][]u8{
     .UI=INTER_FONT_DATA,
-    .UI_Bold=#load("assets/Inter-SemiBold.ttf"),
+    .UI_Bold=#load("../assets/Inter-SemiBold.ttf"),
     // Atkinson Hyperlegible Mono keeps commonly confused letters distinct
     // (b/d/p/q, I/l/1, O/0) for dyslexic and low-vision readers.
-    .Terminal=#load("assets/AtkinsonHyperlegibleMono-Regular.ttf"),
-    .Terminal_Bold=#load("assets/AtkinsonHyperlegibleMono-Bold.ttf"),
-    .Terminal_Italic=#load("assets/AtkinsonHyperlegibleMono-Italic.ttf"),
-    .Terminal_Bold_Italic=#load("assets/AtkinsonHyperlegibleMono-BoldItalic.ttf"),
+    .Terminal=#load("../assets/AtkinsonHyperlegibleMono-Regular.ttf"),
+    .Terminal_Bold=#load("../assets/AtkinsonHyperlegibleMono-Bold.ttf"),
+    .Terminal_Italic=#load("../assets/AtkinsonHyperlegibleMono-Italic.ttf"),
+    .Terminal_Bold_Italic=#load("../assets/AtkinsonHyperlegibleMono-BoldItalic.ttf"),
 }
 // Adwaita Mono covers arrows, braille, geometric shapes and symbols missing
 // from the primary faces before any system font is consulted.
-FALLBACK_FONT_DATA :: #load("assets/AdwaitaMono-Regular.ttf")
+FALLBACK_FONT_DATA :: #load("../assets/AdwaitaMono-Regular.ttf")
 FONT_COUNT :: len(RENDER_FONT_SIZES)*len(Font_Kind)
 
 FONT_UNICODE_CACHE_LIMIT :: 2048

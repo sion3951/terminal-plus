@@ -10,7 +10,7 @@ import glfw "vendor:glfw"
 workspace_windows:[dynamic]^App
 workspace_focused:^App
 workspace_loading,workspace_dirty,workspace_save_allowed:bool
-Workspace_Action_Kind :: enum {New_Window,Move,Drop}
+Workspace_Action_Kind :: enum {New_Window,Move,Drop,Detach}
 Workspace_Action :: struct {
     kind:Workspace_Action_Kind,source,target:^App,tab,onto:^Tab,index:int,
     drop_mode:Tab_Drop_Mode,group_id,to_group,onto_group:u64,
@@ -23,6 +23,9 @@ workspace_detached:[dynamic]Session_Window
 workspace_request_window :: proc(source:^App) {append(&workspace_actions,Workspace_Action{kind=.New_Window,source=source});glfw.PostEmptyEvent()}
 workspace_request_move :: proc(source:^App,tab:^Tab,target:^App,index:int) {
     append(&workspace_actions,Workspace_Action{kind=.Move,source=source,tab=tab,target=target,index=index});glfw.PostEmptyEvent()
+}
+workspace_request_detach :: proc(source:^App,tab:^Tab,group_id:u64=0) {
+    append(&workspace_actions,Workspace_Action{kind=.Detach,source=source,tab=tab,group_id=group_id});glfw.PostEmptyEvent()
 }
 workspace_contains :: proc(a:^App)->bool {for window in workspace_windows {if window==a {return true}};return false}
 
@@ -44,6 +47,7 @@ workspace_process_actions :: proc() {
             if workspace_contains(action.target)&&!glfw.WindowShouldClose(action.target.renderer.window) {workspace_drop_tabs(action)}
             continue
         }
+        if action.kind==.Detach {workspace_detach_tabs(action);continue}
         if action.kind==.Move {
             if workspace_contains(action.target)&&!glfw.WindowShouldClose(action.target.renderer.window) {
                 workspace_move_tab(source,action.tab,action.target,action.index)
@@ -51,6 +55,22 @@ workspace_process_actions :: proc() {
             continue
         }
     }
+}
+
+// Move a dragged tab (or group) into a new window. Wayland clients cannot
+// place windows, so the compositor positions it like any other new window.
+workspace_detach_tabs :: proc(action:Workspace_Action) {
+    source:=action.source
+    moving:=1;if action.group_id!=0 {moving=tab_group_count(source,action.group_id)}
+    // Detaching every tab would only replace the window with an identical one.
+    if moving<=0||moving>=len(source.tabs) {return}
+    width,height:=glfw.GetWindowSize(source.renderer.window)
+    target:=workspace_create_window(int(width),int(height),source)
+    if target==nil {workspace_window_error(source);return}
+    drop:=action;drop.kind=.Drop;drop.target=target;drop.index=0;drop.drop_mode=.Insert;drop.onto=nil;drop.to_group=0;drop.onto_group=0
+    if !workspace_drop_tabs(drop) {glfw.SetWindowShouldClose(target.renderer.window,true);workspace_window_error(source);return}
+    glfw.ShowWindow(target.renderer.window);glfw.FocusWindow(target.renderer.window)
+    workspace_focused=target;session_touch(target)
 }
 
 workspace_window_error :: proc(a:^App) {

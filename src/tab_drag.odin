@@ -101,19 +101,30 @@ tab_drag_update_target :: proc(sx,sy:f64,occupied:^App) {
     }
 }
 
-tab_drag_motion :: proc(a:^App,px,py:f64)->bool {
+// How long a cancelled Wayland drag waits for the pointer to re-enter one of
+// our windows before treating the drop as outside all of them.
+TAB_DRAG_RESOLVE_WAIT :: 150*time.Millisecond
+
+tab_drag_outside :: proc(a:^App,px,py:f64)->bool {
+    width,height:=glfw.GetWindowSize(a.renderer.window)
+    return px<0||py<0||px>=f64(width)||py>=f64(height)
+}
+
+tab_drag_motion :: proc(a:^App,px,py:f64,start_transfer:bool=true)->bool {
     if !tab_drag.armed {return false}
-    if drag_wayland.active {return true}
+    if drag_wayland.active||drag_wayland.resolving {return true}
     if tab_drag_index(tab_drag.source,tab_drag.tab)<0 {tab_drag_cancel();return false}
     sx,sy:=px,py
     occupied:=tab_drag.source
     if a!=tab_drag.source {return true}
-    width,height:=glfw.GetWindowSize(a.renderer.window)
-    if px<0||py<0||px>=f64(width)||py>=f64(height) {occupied=nil}
+    if tab_drag_outside(a,px,py) {occupied=nil}
     dx,dy:=sx-tab_drag.press_x,sy-tab_drag.press_y
     if !tab_drag.dragging&&dx*dx+dy*dy>=36 {a.last_tab_click=nil;tab_drag.dragging=true;tab_drag_mark()}
     if !tab_drag.dragging {return true}
-    if tab_drag_wayland_start() {return true}
+    // The source window's implicit pointer grab gives live feedback while the
+    // tab stays inside it, on every compositor. Only a tab leaving the window
+    // becomes a Wayland drag that other windows (or the desktop) can receive.
+    if occupied==nil&&start_transfer&&tab_drag_wayland_start() {tab_drag_update_target(sx,sy,nil);return true}
     moved:=sx!=tab_drag.screen_x||sy!=tab_drag.screen_y
     tab_drag.screen_x=sx;tab_drag.screen_y=sy
     tab_drag_update_target(sx,sy,occupied)
@@ -123,20 +134,47 @@ tab_drag_motion :: proc(a:^App,px,py:f64)->bool {
 
 tab_drag_release :: proc(a:^App,px,py:f64)->bool {
     if !tab_drag.armed {return false}
-    if drag_wayland.active {return true}
-    tab_drag_motion(a,px,py)
+    if drag_wayland.active||drag_wayland.resolving {return true}
+    tab_drag_motion(a,px,py,false)
     if !tab_drag.armed {return true}
     drag:=tab_drag
     tab_drag_cancel()
     if !drag.dragging {return true}
     if drag.target!=nil {
         workspace_request_drop(drag.source,drag.tab,drag.target,drag.insertion,drag.drop_mode,drag.onto,drag.group_id,drag.to_group,drag.onto_group)
+    } else if a==drag.source&&tab_drag_outside(a,px,py) {
+        // Without Wayland drag-and-drop, a release outside the window detaches.
+        workspace_request_detach(drag.source,drag.tab,drag.group_id)
     }
     return true
 }
 
+// Finish a Wayland drag that no data device accepted (see drag_wl_begin_resolve).
+tab_drag_resolve :: proc() {
+    state:=&drag_wayland
+    if !workspace_contains(tab_drag.source)||tab_drag_index(tab_drag.source,tab_drag.tab)<0 {tab_drag_cancel();return}
+    if state.enters>state.drag_enters&&state.entered!=nil&&workspace_contains(state.entered) {
+        // Dropped on one of our windows: a tab strip receives it, anywhere
+        // else in a window leaves the tab where it was.
+        tab_drag_update_target(state.enter_x,state.enter_y,state.entered)
+        drag:=tab_drag
+        tab_drag_cancel()
+        if drag.target!=nil {
+            workspace_request_drop(drag.source,drag.tab,drag.target,drag.insertion,drag.drop_mode,drag.onto,drag.group_id,drag.to_group,drag.onto_group)
+        }
+        return
+    }
+    // Our wl_pointer only hears about our own surfaces: no enter means the tab
+    // was dropped on the desktop or another application.
+    if time.tick_diff(state.resolve_started,time.tick_now())<TAB_DRAG_RESOLVE_WAIT {return}
+    drag:=tab_drag
+    tab_drag_cancel()
+    workspace_request_detach(drag.source,drag.tab,drag.group_id)
+}
+
 tab_drag_poll :: proc() {
     if !tab_drag.armed {return}
+    if drag_wayland.resolving {tab_drag_resolve();return}
     source:=tab_drag.source
     if !drag_wayland.active {
         px,py:=glfw.GetCursorPos(source.renderer.window)
@@ -155,6 +193,7 @@ tab_drag_poll :: proc() {
     }
 }
 tab_drag_wait_delay :: proc()->f64 {
+    if tab_drag.armed&&drag_wayland.resolving {return 0.01}
     if tab_drag.armed&&tab_drag.dragging&&tab_drag.scroll_direction!=0 {return 0.08}
     return 60
 }
