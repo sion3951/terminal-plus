@@ -46,7 +46,7 @@ sudo mkdir -p /usr/local/bin
 sudo ln -sf /Applications/Terminal+.app/Contents/MacOS/terminal+ /usr/local/bin/terminal+
 ```
 
-**Requires:** macOS 14 or later on Apple silicon. FFmpeg is optional and
+**Requires:** macOS 15 or later on Apple silicon. FFmpeg is optional and
 enables media viewing (`brew install ffmpeg`). ⌘ shortcuts mirror the Linux
 Ctrl+Shift ones: ⌘C/⌘V copy and paste, ⌘N new window, ⌘W close tab, ⌘K clear,
 ⌘T remote machines, ⌘1…9 select tabs, ⌘+/⌘−/⌘0 zoom. Ctrl keeps its terminal

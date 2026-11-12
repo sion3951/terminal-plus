@@ -8,7 +8,7 @@ ifeq ($(UNAME_S),Darwin)
 # macOS renders through Metal; only Linux builds compile the Vulkan shaders.
 # Homebrew's keg-only SQLite precedes the SDK copy for FTS5 trigram support.
 BREW_PREFIX ?= $(shell brew --prefix 2>/dev/null || echo /opt/homebrew)
-MACOS_MINIMUM ?= 14.0
+MACOS_MINIMUM ?= 15.0
 SHADERS :=
 ODIN_FLAGS += -target:darwin_arm64 -minimum-os-version:$(MACOS_MINIMUM) \
 	-extra-linker-flags:"-L$(BREW_PREFIX)/opt/sqlite/lib -L$(BREW_PREFIX)/lib -Wl,-headerpad_max_install_names"

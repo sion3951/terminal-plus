@@ -3,7 +3,7 @@
 `terminal+-VERSION-x86_64.AppImage` (Linux x86_64) and `terminal+-VERSION-arm64.dmg`
 (macOS, Apple silicon) are published from `vX.Y.Z` tags. GitHub Actions builds
 the AppImage on Ubuntu 22.04 with pinned Odin, GLFW and AppImage tools, builds
-the disk image on a `macos-14` runner (`.github/workflows/macos.yml`), bundles
+the disk image on a `macos-15` runner (`.github/workflows/macos.yml`), bundles
 native libraries, and signs update metadata covering both before publishing.
 macOS is experimental: if its build fails, the release still publishes the
 AppImage alone, and the release notes flag the disk image as experimental.

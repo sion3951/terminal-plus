@@ -27,7 +27,7 @@ done
 # Prevent packaging a development binary under a release version.
 [ "$(build/terminal --version)" = "Terminal+ $version" ] || { echo 'Binary version does not match packaging version.' >&2; exit 1; }
 lipo -archs build/terminal 2>/dev/null | grep -qx arm64 || { echo 'build/terminal is not an arm64 executable.' >&2; exit 1; }
-minimum=${MACOS_MINIMUM:-14.0}
+minimum=${MACOS_MINIMUM:-15.0}
 identity=${CODESIGN_IDENTITY:--}
 
 mkdir -p build/packages

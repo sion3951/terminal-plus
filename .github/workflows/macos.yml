@@ -14,7 +14,7 @@ permissions:
   contents: read
 jobs:
   dmg:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       # Optional Developer ID signing and notarization. Without these secrets
       # the app is ad-hoc signed and Gatekeeper asks once before first launch.
