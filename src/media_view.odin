@@ -126,7 +126,7 @@ media_spawn :: proc(process:^Media_Process,arguments:[]string,interactive:bool=f
     if pty_pipe2(&errors,c.int(posix.O_CLOEXEC))!=0 {posix.close(output[0]);posix.close(output[1]);return false}
     // A larger pipe absorbs the decoder's writes without thousands of tiny
     // producer/consumer handoffs for each physical-resolution frame.
-    _=posix.fcntl(output[0],cast(posix.FCNTL_Cmd)1031,c.int(1024*1024)) // F_SETPIPE_SZ
+    when ODIN_OS==.Linux {_=posix.fcntl(output[0],cast(posix.FCNTL_Cmd)1031,c.int(1024*1024))} // F_SETPIPE_SZ
     channel:=[2]posix.FD{-1,-1}
     input:posix.FD= -1
     if interactive {

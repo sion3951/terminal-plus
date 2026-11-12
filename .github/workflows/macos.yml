@@ -48,7 +48,13 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
           ./build/terminal --self-check
           ./build/terminal --persistence-check
-          ./build/terminal --document-check examples/html/*.html
+          # Inline SVG rasterizes through FFmpeg's librsvg decoder, which
+          # Homebrew's plain ffmpeg formula leaves out (ffmpeg-full has it).
+          if ffmpeg -hide_banner -decoders 2>/dev/null | grep -q librsvg; then
+            ./build/terminal --document-check examples/html/*.html
+          else
+            ./build/terminal --document-check $(ls examples/html/*.html | grep -v canvas.html)
+          fi
       - name: Import signing certificate
         if: env.MACOS_CERTIFICATE != '' && env.MACOS_SIGN_IDENTITY != ''
         run: |
