@@ -53,7 +53,7 @@ jobs:
           if ffmpeg -hide_banner -decoders 2>/dev/null | grep -q librsvg; then
             ./build/terminal --document-check examples/html/*.html
           else
-            ./build/terminal --document-check $(ls examples/html/*.html | grep -v canvas.html)
+            ./build/terminal --document-check $(grep -L -i svg examples/html/*.html)
           fi
       - name: Import signing certificate
         if: env.MACOS_CERTIFICATE != '' && env.MACOS_SIGN_IDENTITY != ''
