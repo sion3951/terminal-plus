@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:strings"
@@ -8,11 +8,6 @@ import posix "core:sys/posix"
 // gettext is part of the glibc already used by the native Linux executable.
 // Keep translation in this process, using the shell's variables even when
 // those variables have not been exported to external commands.
-foreign import native_shell_translation_lib "system:c"
-foreign native_shell_translation_lib {
-    @(link_name="dgettext") native_shell_dgettext :: proc(domain,message:cstring)->cstring ---
-    @(link_name="bindtextdomain") native_shell_bindtextdomain :: proc(domain,directory:cstring)->cstring ---
-}
 
 native_shell_translate :: proc(shell:^Native_Shell,text:string)->(string,bool) {
     domain,_:=native_shell_value_get(shell,"TEXTDOMAIN")

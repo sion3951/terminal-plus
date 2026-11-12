@@ -136,7 +136,8 @@ updater_check :: proc(a:^App) {
     if u.directory=="" {u.state=.Error;updater_message(u,"Update cache is unavailable.");updater_dirty(a);return}
     target,error:=updater_platform_target()
     if error!="" {
-        when ODIN_ARCH==.amd64 {target=Update_Target{os="linux",arch="amd64",kind="appimage"}}
+        when ODIN_OS==.Darwin&&ODIN_ARCH==.arm64 {target=Update_Target{os="macos",arch="arm64",kind="dmg"}}
+        else when ODIN_ARCH==.amd64 {target=Update_Target{os="linux",arch="amd64",kind="appimage"}}
         else when ODIN_ARCH==.arm64 {target=Update_Target{os="linux",arch="arm64",kind="appimage"}}
         else {u.state=.Error;updater_message(u,error);updater_dirty(a);return}
     }

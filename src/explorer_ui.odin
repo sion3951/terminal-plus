@@ -232,8 +232,10 @@ explorer_open_preview :: proc(a:^App,tab:^Tab,path:string) {
     explorer_result_destroy(&e.preview)
     e.preview_open=true;e.preview_scroll=0;e.waiting=true
     document_view_destroy(e.document);e.document=nil
-    if document_kind(path)!=.None {e.document=document_view_open(path,tab.remote,tab.device)}
-    explorer_request(&e.browser,path,.Preview);a.dirty=true
+    // Web pages come from the network, not from the file browser.
+    if document_kind(path)!=.None||native_http_url(path) {e.document=document_view_open(path,tab.remote,tab.device)}
+    if !native_http_url(path) {explorer_request(&e.browser,path,.Preview)}
+    a.dirty=true
 }
 explorer_close_preview :: proc(a:^App) {
     tab:=active_tab(a)

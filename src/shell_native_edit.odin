@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -71,7 +71,7 @@ native_shell_editor_safe :: proc(text:string)->string {
 
 native_shell_editor_width :: proc()->int {
     size:PTY_Winsize
-    if pty_ioctl(0,0x5413,&size)==0&&size.cols>0 {return max(8,int(size.cols))}
+    if pty_ioctl(0,PLATFORM_TIOCGWINSZ,&size)==0&&size.cols>0 {return max(8,int(size.cols))}
     return 80
 }
 
@@ -378,7 +378,7 @@ native_shell_editor_quote :: proc(text:string)->string {
 native_shell_editor_read_byte :: proc(timeout:int)->(u8,int) {
     if len(native_shell_editor.pending)>0 {byte:=native_shell_editor.pending[0];ordered_remove(&native_shell_editor.pending,0);return byte,1}
     descriptor:=posix.pollfd{fd=0,events={.IN}}
-    ready:=posix.poll(&descriptor,1,c.int(timeout))
+    ready:=platform_poll(&descriptor,1,c.int(timeout))
     if ready==0 {return 0,0}
     if ready<0 {if posix.errno()==.EINTR {return 0,0};return 0,-1}
     byte:u8;count:=posix.read(0,&byte,1)

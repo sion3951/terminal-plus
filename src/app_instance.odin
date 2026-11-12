@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -51,7 +51,7 @@ app_instance_transfer :: proc(fd:posix.FD,bytes:[]u8,writing:bool,timeout:int,st
         if writing {descriptors[0].events={.OUT}}
         count:=1
         if state!=nil {descriptors[1]={fd=state.wake[0],events={.IN}};count=2}
-        result:=posix.poll(raw_data(descriptors[:]),posix.nfds_t(count),c.int(timeout-elapsed))
+        result:=platform_poll(raw_data(descriptors[:]),posix.nfds_t(count),c.int(timeout-elapsed))
         if result<0 {if posix.errno()==.EINTR {continue};return false}
         if result==0 {return false}
         if count==2&&.IN in descriptors[1].revents {
@@ -61,7 +61,7 @@ app_instance_transfer :: proc(fd:posix.FD,bytes:[]u8,writing:bool,timeout:int,st
         }
         amount:c.ssize_t
         remaining:=len(bytes)-used
-        if writing {amount=file_socket_send(fd,&bytes[used],c.size_t(remaining),0x4000)}
+        if writing {amount=file_socket_send(fd,&bytes[used],c.size_t(remaining),PLATFORM_MSG_NOSIGNAL)}
         else {amount=posix.read(fd,&bytes[used],c.size_t(remaining))}
         if amount>0 {used+=int(amount)}
         else if amount<0&&(posix.errno()==.EINTR||posix.errno()==.EAGAIN) {continue}
@@ -72,12 +72,12 @@ app_instance_transfer :: proc(fd:posix.FD,bytes:[]u8,writing:bool,timeout:int,st
 
 app_instance_connect :: proc(path:string)->posix.FD {
     address,valid:=local_session_address(path);if !valid {return -1}
-    fd:=local_socket(1,1|0x80000|0x800,0);if fd<0 {return -1}
+    fd:=local_socket(1,1|PLATFORM_SOCK_CLOEXEC|PLATFORM_SOCK_NONBLOCK,0);if fd<0 {return -1}
     if local_connect(fd,&address,c.uint(size_of(address)))!=0 {
         if posix.errno()!=.EINPROGRESS {posix.close(fd);return -1}
         descriptor:=posix.pollfd{fd=fd,events={.OUT}}
         error:c.int;length:=c.uint(size_of(error))
-        if posix.poll(&descriptor,1,100)<=0||local_sockopt(fd,1,4,&error,&length)!=0||error!=0 {posix.close(fd);return -1}
+        if platform_poll(&descriptor,1,100)<=0||local_sockopt(fd,PLATFORM_SOL_SOCKET,PLATFORM_SO_ERROR,&error,&length)!=0||error!=0 {posix.close(fd);return -1}
     }
     if !local_session_same_user(fd) {posix.close(fd);return -1}
     return fd
@@ -131,7 +131,7 @@ app_instance_init :: proc(command,ssh_target:string)->App_Instance_Result {
     state:=&app_instance_state
     state.lock=lock;state.owns_lock=true;state.lock_path=strings.clone(lock_path);state.socket_path=strings.clone(path)
     complete:=false;defer {if !complete {app_instance_destroy()}}
-    state.listener=local_socket(1,1|0x80000|0x800,0)
+    state.listener=local_socket(1,1|PLATFORM_SOCK_CLOEXEC|PLATFORM_SOCK_NONBLOCK,0)
     if state.listener<0 {session_error_set("Cannot create the terminal instance socket.");return .Failed}
     os.remove(path)
     if local_bind(state.listener,&address,c.uint(size_of(address)))!=0 {session_error_set("Cannot bind the terminal instance socket.");return .Failed}
@@ -173,14 +173,14 @@ app_instance_worker :: proc(worker:^thread.Thread) {
         sync.mutex_lock(&state.mutex);stopping:=state.stopping;sync.mutex_unlock(&state.mutex)
         if stopping {break}
         descriptors:=[2]posix.pollfd{{fd=state.listener,events={.IN}},{fd=state.wake[0],events={.IN}}}
-        result:=posix.poll(raw_data(descriptors[:]),2,-1)
+        result:=platform_poll(raw_data(descriptors[:]),2,-1)
         if result<0 {if posix.errno()==.EINTR {continue};break}
         if .IN in descriptors[1].revents {
             buffer:[64]u8
             for posix.read(state.wake[0],raw_data(buffer[:]),len(buffer))>0 {}
         }
         if .IN in descriptors[0].revents {
-            fd:=local_accept(state.listener,nil,nil,0x80000|0x800)
+            fd:=local_accept(state.listener,nil,nil,PLATFORM_SOCK_CLOEXEC|PLATFORM_SOCK_NONBLOCK)
             if fd>=0 {app_instance_accept_request(state,fd);posix.close(fd)}
         }
         if .ERR in descriptors[0].revents||.HUP in descriptors[0].revents||.NVAL in descriptors[0].revents {break}

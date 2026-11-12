@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:fmt"
@@ -23,7 +23,10 @@ media_audio_devices :: proc(view:^Media_View,backend:string)->(devices:[dynamic]
     executable:=media_ffmpeg()
     if executable=="" {return devices,"FFmpeg is unavailable."}
     process:Media_Process
-    if !media_spawn(&process,[]string{executable,"-hide_banner","-sinks",backend}) {return devices,"Could not list audio outputs."}
+    arguments:=[]string{executable,"-hide_banner","-sinks",backend}
+    // Core Audio only logs its devices; play a few silent samples to list them.
+    if backend=="audiotoolbox" {arguments=[]string{executable,"-hide_banner","-nostdin","-f","lavfi","-i","anullsrc=r=48000:cl=stereo","-t","0.01","-f","audiotoolbox","-list_devices","true","-"}}
+    if !media_spawn(&process,arguments) {return devices,"Could not list audio outputs."}
     defer {media_process_finish(view,&process);delete(process.diagnostic)}
     output:[dynamic]u8;defer delete(output)
     buffer:[4096]u8
@@ -42,7 +45,13 @@ media_audio_devices :: proc(view:^Media_View,backend:string)->(devices:[dynamic]
         if posix.errno()==.EINTR {continue}
         if posix.errno()!=.EAGAIN {return devices,"Could not read audio outputs."}
         descriptors:=[2]posix.pollfd{{fd=process.output,events={.IN}},{fd=process.errors,events={.IN}}}
-        _=posix.poll(raw_data(descriptors[:]),2,50)
+        _=platform_poll(raw_data(descriptors[:]),2,50)
+    }
+    media_errors(&process)
+    if backend=="audiotoolbox" {
+        media_audiotoolbox_outputs(&devices,string(process.diagnostic[:]))
+        if len(devices)==1 {error="No additional audio outputs found."}
+        return
     }
     text:=string(output[:])
     if strings.contains(text,"Cannot list sinks")||strings.contains(string(process.diagnostic[:]),"Cannot list sinks") {
@@ -175,4 +184,32 @@ media_proc_text :: proc(path:string)->string {
         break
     }
     return string(data[:])
+}
+
+// Parse FFmpeg's "[index] name, uid" Core Audio listing. The index is the
+// value later passed to -audio_device_index. Input-only devices are listed
+// too; Core Audio rejects them at playback with an ordinary FFmpeg error.
+media_audiotoolbox_outputs :: proc(devices:^[dynamic]Media_Audio_Device,log:string) {
+    text:=log
+    listing:=false
+    for source_line in strings.split_lines_iterator(&text) {
+        line:=source_line
+        if strings.contains(line,"CoreAudio devices:") {listing=true;continue}
+        if !listing {continue}
+        // Strip the "[AudioToolbox @ 0x...]" logging context.
+        if strings.has_prefix(line,"[AudioToolbox") {
+            close:=strings.index_byte(line,']');if close<0 {continue}
+            line=line[close+1:]
+        }
+        line=strings.trim_space(line)
+        if !strings.has_prefix(line,"[") {listing=false;continue}
+        close:=strings.index_byte(line,']');if close<2 {continue}
+        index,ok:=strconv.parse_int(line[1:close]);if !ok||index<0 {continue}
+        rest:=strings.trim_space(line[close+1:])
+        label,uid:=rest,""
+        if comma:=strings.last_index(rest,", ");comma>0 {label=strings.trim_space(rest[:comma]);uid=strings.trim_space(rest[comma+2:])}
+        // FFmpeg prints "(null)" for names not representable in MacRoman.
+        if label==""||label=="(null)" {label=uid if uid!=""&&uid!="(null)" else fmt.tprintf("Output %d",index+1)}
+        media_audio_device_add(devices,fmt.tprintf("%d",index),label)
+    }
 }

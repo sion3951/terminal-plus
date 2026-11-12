@@ -319,3 +319,7 @@ tab_drag_wayland_start :: proc()->bool {
     wl_display_flush(state.display)
     return true
 }
+
+// Wayland exposes no global window positions; other windows are reached only
+// through the data-device drag started by tab_drag_wayland_start.
+tab_drag_window_at :: proc(source:^App,px,py:f64)->(target:^App,x,y:f64,found:bool) {return}

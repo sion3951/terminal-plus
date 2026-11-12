@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -412,7 +412,7 @@ native_shell_read_record :: proc(shell:^Native_Shell,fd:posix.FD,delimiter:u8='\
         wait:=100
         if timeout>=0 {left:=timeout-time.duration_seconds(time.tick_diff(started,time.tick_now()));if left<=0 {record.timed_out=true;break};wait=min(wait,max(1,int(left*1000)))}
         descriptor:=posix.pollfd{fd=fd,events={.IN}}
-        result:=posix.poll(&descriptor,1,c.int(wait));if result==0 {continue};if result<0 {if posix.errno()==.EINTR {continue};break}
+        result:=platform_poll(&descriptor,1,c.int(wait));if result==0 {continue};if result<0 {if posix.errno()==.EINTR {continue};break}
         byte:u8;amount:=posix.read(fd,&byte,1)
         if amount<0&&posix.errno()==.EINTR {continue};if amount<=0 {break}
         if byte==0&&!preserve_null&&(delimiter!=0||exact) {continue}
@@ -503,7 +503,7 @@ native_shell_builtin_read :: proc(shell:^Native_Shell,args:[]string)->int {
     if posix.fcntl(fd,.GETFD)<0 {fmt.eprintf("read: %d: invalid file descriptor\n",fd);return 1}
     // A zero timeout is a readiness probe; it consumes no bytes and performs
     // no assignments, even when a variable name is supplied.
-    if timeout==0 {descriptor:=posix.pollfd{fd=fd,events={.IN}};if posix.poll(&descriptor,1,0)>0&&(.IN in descriptor.revents||.HUP in descriptor.revents) {return 0};return 1}
+    if timeout==0 {descriptor:=posix.pollfd{fd=fd,events={.IN}};if platform_poll(&descriptor,1,0)>0&&(.IN in descriptor.revents||.HUP in descriptor.revents) {return 0};return 1}
     if timeout>0 {info:posix.stat_t;if posix.fstat(fd,&info)==.OK&&posix.S_ISREG(info.st_mode) {timeout=-1}}
     record:Native_Shell_Read_Record
     saved:posix.termios;changed:=false

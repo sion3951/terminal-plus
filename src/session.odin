@@ -274,8 +274,8 @@ session_capture_window :: proc(window:^App,own:bool=false)->Session_Window {
         } else if !tab.remote&&tab.started&&!tab.exited&&tab.pty.pid>0 {
             // Read the shell's actual cwd as a final close/save safeguard,
             // including output whose prompt metadata is still in the PTY.
-            current,error:=os.read_link(fmt.tprintf("/proc/%d/cwd",tab.pty.pid),context.temp_allocator)
-            if error==nil&&strings.has_prefix(current,"/") {path=current}
+            current:=platform_process_cwd(tab.pty.pid)
+            if strings.has_prefix(current,"/") {path=current}
         }
         saved.tabs[j]=Session_Record{id=tab.session_id,name=tab.device.name,target=tab.device.target,path=path,port=tab.device.port,remote=tab.remote,session_owned=tab.session_owned,files=tab.files,source=tab.source_id,document=tab.document_path,label=tab.label,groups=tab_group_copy_path(tab)}
     }

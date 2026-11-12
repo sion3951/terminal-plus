@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -36,7 +36,6 @@ foreign import pty_lib "system:c"
 foreign pty_lib {
     @(link_name="openpty") pty_openpty :: proc(master,slave:^posix.FD,name:cstring,termios:rawptr,size:^PTY_Winsize)->c.int ---
     @(link_name="ioctl") pty_ioctl :: proc(fd:posix.FD,request:c.ulong,#c_vararg args:..any)->c.int ---
-    @(link_name="pipe2") pty_pipe2 :: proc(fds:^[2]posix.FD,flags:c.int)->c.int ---
 }
 
 pty_signal_worker :: proc(p:^PTY) {
@@ -65,7 +64,7 @@ pty_worker :: proc(t:^thread.Thread) {
         // unconditional and otherwise spins until the GUI drains the buffer.
         count:=2
         if space==0 && !writing {count=1}
-        polled:=posix.poll(raw_data(fds[:]),posix.nfds_t(count),-1)
+        polled:=platform_poll(raw_data(fds[:]),posix.nfds_t(count),-1)
         if polled<0 {
             if posix.errno()==.EINTR {continue}
             break
@@ -105,7 +104,7 @@ pty_worker :: proc(t:^thread.Thread) {
             }
             data:=p.input[p.input_offset:end]
             amount:c.ssize_t
-            if p.persistent {amount=file_socket_send(p.master,raw_data(data),c.size_t(min(len(data),32768)),0x4000)}
+            if p.persistent {amount=file_socket_send(p.master,raw_data(data),c.size_t(min(len(data),32768)),PLATFORM_MSG_NOSIGNAL)}
             else {amount=posix.write(p.master,raw_data(data),c.size_t(min(len(data),32768)))}
             if amount>0 {
                 p.input_offset+=int(amount)
@@ -128,7 +127,7 @@ pty_start :: proc(p:^PTY,cols,rows:int,command:string="",wake_events:bool=true,d
     arguments:=make([dynamic]string,context.temp_allocator)
     append(&arguments,"terminal+","--native-shell")
     if command!="" {append(&arguments,"-c",command)}
-    return pty_spawn(p,cols,rows,"/proc/self/exe",arguments[:],wake_events,directory)
+    return pty_spawn(p,cols,rows,platform_self_exe(),arguments[:],wake_events,directory)
 }
 
 // OpenSSH owns authentication, host-key confirmation and configuration. Its
@@ -185,7 +184,7 @@ pty_spawn :: proc(p:^PTY,cols,rows:int,executable:string,arguments:[]string,wake
         // POSIX async-signal-safe calls only, all pointers prepared above.
         posix.close(errors[0]);posix.close(master)
         ok:=posix.setsid()>=0
-        if ok {ok=pty_ioctl(slave,0x540e,c.int(0))==0} // TIOCSCTTY
+        if ok {ok=pty_ioctl(slave,PLATFORM_TIOCSCTTY,c.int(0))==0}
         if ok {ok=posix.dup2(slave,0)>=0 && posix.dup2(slave,1)>=0 && posix.dup2(slave,2)>=0}
         if slave>2 {posix.close(slave)}
         if ok {posix.execve(path,argv,envp)}
@@ -270,7 +269,7 @@ pty_resize :: proc(p:^PTY,cols,rows:int) {
     if p.persistent {local_session_resize(p,cols,rows);return}
     if p.master<0 {return}
     size:=PTY_Winsize{rows=u16(clamp(rows,1,65535)),cols=u16(clamp(cols,1,65535))}
-    pty_ioctl(p.master,0x5414,&size) // TIOCSWINSZ also sends SIGWINCH to foreground group.
+    pty_ioctl(p.master,PLATFORM_TIOCSWINSZ,&size) // TIOCSWINSZ also sends SIGWINCH to foreground group.
 }
 pty_destroy :: proc(p:^PTY) {
     if p.persistent {local_session_close(p,false);return}

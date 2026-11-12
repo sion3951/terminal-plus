@@ -30,13 +30,14 @@ app_process_output :: proc(a:^App,hold_local:bool,budget:f64=0.006) {
     for index:=len(a.tabs)-1;index>=0;index-=1 {
         tab:=a.tabs[index]
         if tab.remote_end==nil {continue}
-        done,success:=remote_session_end_poll(tab.remote_end)
+        done,_:=remote_session_end_poll(tab.remote_end)
         if !done {continue}
         remote_session_end_destroy(tab.remote_end);tab.remote_end=nil
-        // Authentication may have failed while a close was pending.
-        if success||(tab.exited&&!tab.session_owned&&tab.restore_path=="") {app_finish_close_tab(a,index)}
-        else {delete(tab.input_error);tab.input_error=strings.clone("Could not end the remote session. Reconnect and try closing the tab again.");a.dirty=true}
+        // A disconnected host must never prevent local tab disposal.
+        // Cleanup is best effort; a second close also cancels the attempt.
+        app_finish_close_tab(a,index)
     }
+    selection_capture(a)
     a.output_work=false
     count:=len(a.tabs)
     if count==0 {return}
@@ -57,9 +58,9 @@ app_process_output :: proc(a:^App,hold_local:bool,budget:f64=0.006) {
             generation:=tab.terminal.history_generation
             if local_session_poll(&tab.pty,&tab.terminal,&tab.output,&tab.output_offset) {
                 app_terminal_directory(a,tab)
-                if tab.scroll>0 {tab.scroll+=int(tab.terminal.history_generation-generation)}
+                if tab.scroll>0||(index==a.active&&a.selected&&!tab.terminal.alternate) {tab.scroll+=int(tab.terminal.history_generation-generation)}
                 tab.scroll=min(tab.scroll,terminal_history_count(&tab.terminal))
-                if index==a.active {a.dirty=true;if tab.pty.session_state.screen_changed {a.selected=false}}
+                if index==a.active {a.dirty=true}
                 else if tab.pty.session_state.screen_changed&&!tab.unread {tab.unread=true;a.dirty=true}
             }
             if local_session_pending(&tab.pty) {a.output_work=true}
@@ -94,9 +95,9 @@ app_process_output :: proc(a:^App,hold_local:bool,budget:f64=0.006) {
             if used==0 {break} // Archive worker will wake us when storage has room.
             app_terminal_directory(a,tab)
             tab.output_offset+=used;processed+=used
-            if tab.scroll>0 {tab.scroll+=int(tab.terminal.history_generation-generation)}
+            if tab.scroll>0||(index==a.active&&a.selected&&!tab.terminal.alternate) {tab.scroll+=int(tab.terminal.history_generation-generation)}
             tab.scroll=min(tab.scroll,terminal_history_count(&tab.terminal))
-            if index==a.active {a.dirty=true;a.selected=false}
+            if index==a.active {a.dirty=true}
             else if !tab.unread {tab.unread=true;a.dirty=true}
             if time.duration_seconds(time.tick_diff(began,time.tick_now()))>=budget {break}
         }

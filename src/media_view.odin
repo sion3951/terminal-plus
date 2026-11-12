@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -130,7 +130,7 @@ media_spawn :: proc(process:^Media_Process,arguments:[]string,interactive:bool=f
     channel:=[2]posix.FD{-1,-1}
     input:posix.FD= -1
     if interactive {
-        if file_socketpair(1,1|0x80000,0,&channel)==0 {input=channel[0]}
+        if file_socketpair(1,1|PLATFORM_SOCK_CLOEXEC,0,&channel)==0 {input=channel[0]}
     } else {input=posix.open("/dev/null",{.CLOEXEC})}
     if input<0 {for fd in ([4]posix.FD{output[0],output[1],errors[0],errors[1]}) {posix.close(fd)};return false}
     command,env:=raw_data(argv),raw_data(environment)
@@ -172,7 +172,7 @@ media_audio_update :: proc(process:^Media_Process) {
     }
     if process.audio_command_sent<process.audio_command_length {
         data:=process.audio_command[process.audio_command_sent:process.audio_command_length]
-        count:=file_socket_send(process.control,raw_data(data),c.size_t(len(data)),0x4000|0x40) // MSG_NOSIGNAL | MSG_DONTWAIT
+        count:=file_socket_send(process.control,raw_data(data),c.size_t(len(data)),PLATFORM_MSG_NOSIGNAL|PLATFORM_MSG_DONTWAIT)
         if count>0 {process.audio_command_sent+=int(count)}
         else if count<0&&posix.errno()!=.EINTR&&posix.errno()!=.EAGAIN {
             // The decoder can close stdin at EOF while the last frame is visible.
@@ -272,7 +272,7 @@ media_read :: proc(view:^Media_View,process:^Media_Process,destination:[]u8)->bo
         if posix.errno()==.EINTR {continue}
         if posix.errno()!=.EAGAIN {return false}
         descriptors:=[2]posix.pollfd{{fd=process.output,events={.IN}},{fd=process.errors,events={.IN}}}
-        if posix.poll(raw_data(descriptors[:]),2,50)<0&&posix.errno()!=.EINTR {return false}
+        if platform_poll(raw_data(descriptors[:]),2,50)<0&&posix.errno()!=.EINTR {return false}
     }
     return true
 }
@@ -329,6 +329,8 @@ media_frame :: proc(view:^Media_View,process:^Media_Process,pixels:^[dynamic]u8)
     okay=media_read(view,process,pixels^[:]);return
 }
 media_audio_output :: proc()->string {
+    // FFmpeg's Core Audio output device; no sound server is involved.
+    when ODIN_OS==.Darwin {return "audiotoolbox"}
     if os.get_env("PULSE_SERVER",context.temp_allocator)!="" {return "pulse"}
     // PipeWire and PulseAudio both serve the Pulse protocol here. Check every
     // location libpulse would try so a launcher with a trimmed environment
@@ -522,7 +524,11 @@ media_worker :: proc(worker:^thread.Thread) {
             append(&arguments,"-map","0:a:0","-vn","-sn","-dn","-af",audio_filter,
                 "-c:a","pcm_s16le","-ac","2","-ar","48000")
             if audio_output=="pulse" {append(&arguments,"-buffer_duration","120","-prebuf","0")}
-            append(&arguments,"-f",audio_output,output_device)
+            if audio_output=="audiotoolbox" {
+                // Core Audio selects outputs by index; the file name is unused.
+                if output_device!="default" {append(&arguments,"-audio_device_index",output_device)}
+                append(&arguments,"-f",audio_output,"-")
+            } else {append(&arguments,"-f",audio_output,output_device)}
             if visual!=nil {media_visual_output(&arguments)}
         }
         process:Media_Process

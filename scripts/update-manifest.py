@@ -37,10 +37,17 @@ def build_manifest(args):
         raise ValueError("Repository must use owner/name format.")
     packages = args.packages
     base = f"https://github.com/{args.repo}/releases/download/{quote(args.tag, safe='')}"
-    targets = [("linux", "amd64", "appimage", f"terminal+-{version}-x86_64.AppImage")]
+    # (os, arch, kind, file name, required). macOS is experimental and must not
+    # block a Linux release; it is signed into the manifest when it was built.
+    targets = [
+        ("linux", "amd64", "appimage", f"terminal+-{version}-x86_64.AppImage", True),
+        ("macos", "arm64", "dmg", f"terminal+-{version}-arm64.dmg", False),
+    ]
     assets = []
-    for os_name, arch, kind, name in targets:
+    for os_name, arch, kind, name, required in targets:
         package = packages / name
+        if not required and not package.exists():
+            continue
         if not package.is_file() or package.stat().st_size == 0:
             raise ValueError(f"Missing or empty release asset: {package}")
         digest = hashlib.sha256()

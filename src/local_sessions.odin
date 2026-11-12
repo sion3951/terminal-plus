@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -18,8 +18,6 @@ LOCAL_SESSION_MAGIC :: u32(0x31534c4d)
 LOCAL_SESSION_VERSION :: u32(1)
 LOCAL_SESSION_MAX_PACKET :: TERMINAL_MAX_CELLS*(size_of(Cell)+4)+65536
 Local_Session_Kind :: enum u32 {Input=1,Resize,Cancel,End,History,Clear,State,Page,Document,Attach}
-Local_Session_Address :: struct {family:u16,path:[108]u8}
-Local_Session_Credentials :: struct {pid:c.int,uid,gid:c.uint}
 Local_Session_State :: struct {
     cols,rows,cursor_x,cursor_y:u32,
     history_count,history_epoch,history_generation:u64,
@@ -43,22 +41,19 @@ local_host_wake_fd:posix.FD= -1
 local_host_stopping:bool
 foreign import local_session_lib "system:c"
 foreign local_session_lib {
-    @(link_name="socket") local_socket :: proc(domain,kind,protocol:c.int)->posix.FD ---
     @(link_name="bind") local_bind :: proc(fd:posix.FD,address:rawptr,length:c.uint)->c.int ---
     @(link_name="listen") local_listen :: proc(fd:posix.FD,count:c.int)->c.int ---
     @(link_name="connect") local_connect :: proc(fd:posix.FD,address:rawptr,length:c.uint)->c.int ---
-    @(link_name="accept4") local_accept :: proc(fd:posix.FD,address:rawptr,length:rawptr,flags:c.int)->posix.FD ---
     @(link_name="getsockopt") local_sockopt :: proc(fd:posix.FD,level,name:c.int,value:rawptr,length:^c.uint)->c.int ---
     @(link_name="shutdown") local_shutdown :: proc(fd:posix.FD,how:c.int)->c.int ---
 }
 local_session_bytes :: proc(value:rawptr,length:int)->[]u8 {return (cast([^]u8)value)[:length]}
 local_session_address :: proc(path:string)->(address:Local_Session_Address,ok:bool) {
-    if len(path)>=len(address.path) {return}
-    address.family=1;copy(address.path[:],transmute([]u8)path);ok=true;return
+    return platform_socket_address(path)
 }
 local_session_same_user :: proc(fd:posix.FD)->bool {
-    credentials:Local_Session_Credentials;length:=c.uint(size_of(credentials))
-    return local_sockopt(fd,1,17,&credentials,&length)==0&&credentials.uid==c.uint(posix.getuid())
+    uid,ok:=platform_peer_uid(fd)
+    return ok&&uid==posix.getuid()
 }
 local_session_directory :: proc()->string {
     runtime:=os.get_env("XDG_RUNTIME_DIR",context.temp_allocator)
@@ -152,7 +147,7 @@ local_session_read_exact :: proc(fd:posix.FD,bytes:[]u8,timeout:int)->bool {
         remaining:=max(0,timeout-elapsed)
         descriptor:=posix.pollfd{fd=fd,events={.IN}}
         if remaining==0 {return false}
-        result:=posix.poll(&descriptor,1,c.int(remaining))
+        result:=platform_poll(&descriptor,1,c.int(remaining))
         if result<0&&posix.errno()==.EINTR {continue}
         if result<=0 {return false}
         available:=len(bytes)-used
@@ -168,7 +163,7 @@ local_session_send_command :: proc(fd:posix.FD,kind:Local_Session_Kind)->bool {
     position:=0
     for position<len(packet) {
         remaining:=len(packet)-position
-        amount:=file_socket_send(fd,raw_data(packet[position:]),c.size_t(remaining),0x4000)
+        amount:=file_socket_send(fd,raw_data(packet[position:]),c.size_t(remaining),PLATFORM_MSG_NOSIGNAL)
         if amount>0 {position+=int(amount)}
         else if amount<0&&posix.errno()==.EINTR {continue}
         else {return false}
@@ -187,12 +182,12 @@ local_session_control :: proc(p:^PTY,kind:Local_Session_Kind)->bool {
 local_session_open_socket :: proc(path:string)->posix.FD {
     address,valid:=local_session_address(path);if !valid {return -1}
     // A full accept backlog must never block the UI during attach or close.
-    fd:=local_socket(1,1|0x80000|0x800,0);if fd<0 {return -1}
+    fd:=local_socket(1,1|PLATFORM_SOCK_CLOEXEC|PLATFORM_SOCK_NONBLOCK,0);if fd<0 {return -1}
     if local_connect(fd,&address,c.uint(size_of(address)))!=0 {
         if posix.errno()!=.EINPROGRESS {posix.close(fd);return -1}
         descriptor:=posix.pollfd{fd=fd,events={.OUT}}
         error:c.int;length:=c.uint(size_of(error))
-        if posix.poll(&descriptor,1,100)<=0||local_sockopt(fd,1,4,&error,&length)!=0||error!=0 {posix.close(fd);return -1}
+        if platform_poll(&descriptor,1,100)<=0||local_sockopt(fd,PLATFORM_SOL_SOCKET,PLATFORM_SO_ERROR,&error,&length)!=0||error!=0 {posix.close(fd);return -1}
     }
     if !local_session_same_user(fd) {posix.close(fd);return -1}
     return fd
@@ -203,6 +198,7 @@ local_session_spawn_host :: proc(id:string,cols,rows:int,command,directory:strin
     argv:=make([]cstring,len(arguments)+1);defer {for arg in argv {if arg!=nil {delete(arg)}};delete(argv)}
     for arg,i in arguments {argv[i]=strings.clone_to_cstring(arg)}
     argv_ptr:=raw_data(argv);env_ptr:=posix.environ
+    executable:=strings.clone_to_cstring(platform_self_exe());defer delete(executable)
     child:=posix.fork()
     if child==0 {
         if posix.setsid()<0 {posix._exit(127)}
@@ -211,7 +207,7 @@ local_session_spawn_host :: proc(id:string,cols,rows:int,command,directory:strin
         if grandchild>0 {posix._exit(0)}
         null_fd:=posix.open("/dev/null",{.RDWR})
         if null_fd>=0 {posix.dup2(null_fd,0);posix.dup2(null_fd,1);posix.dup2(null_fd,2);if null_fd>2 {posix.close(null_fd)}}
-        posix.execve("/proc/self/exe",argv_ptr,env_ptr)
+        posix.execve(executable,argv_ptr,env_ptr)
         posix._exit(127)
     }
     if child<0 {return false}
@@ -398,7 +394,7 @@ local_session_host :: proc(args:[]string)->int {
     // Keep the inode stable: unlinking a locked file lets a new host acquire a
     // different inode while another launcher still holds the old one.
     address,valid:=local_session_address(path);if !valid {return 1}
-    listener:=local_socket(1,1|0x80000|0x800,0);if listener<0 {return 1}
+    listener:=local_socket(1,1|PLATFORM_SOCK_CLOEXEC|PLATFORM_SOCK_NONBLOCK,0);if listener<0 {return 1}
     defer posix.close(listener)
     os.remove(path)
     if local_bind(listener,&address,c.uint(size_of(address)))!=0||local_listen(listener,8)!=0 {return 1}
@@ -471,7 +467,7 @@ local_session_host :: proc(args:[]string)->int {
         if client>=0&&t.dirty {timeout=16}
         if progressed {timeout=0}
         if ended {timeout=16 if client>=0 else 250}
-        result:=posix.poll(raw_data(descriptors[:]),3,timeout)
+        result:=platform_poll(raw_data(descriptors[:]),3,timeout)
         if result<0 {if posix.errno()==.EINTR {continue};break}
         if .IN in descriptors[1].revents {for posix.read(wake[0],raw_data(read_buffer[:]),len(read_buffer))>0 {}}
         // Retire disconnected viewers before accepting a replacement.
@@ -510,7 +506,7 @@ local_session_host :: proc(args:[]string)->int {
         if offset>0 {copy(incoming[:],incoming[offset:]);resize(&incoming,len(incoming)-offset)}
         if disconnected&&client>=0 {posix.close(client);client= -1}
         if .IN in descriptors[0].revents {
-            next:=local_accept(listener,nil,nil,0x80000|0x800)
+            next:=local_accept(listener,nil,nil,PLATFORM_SOCK_CLOEXEC|PLATFORM_SOCK_NONBLOCK)
             if next>=0 {
                 if !local_session_same_user(next) {posix.close(next)}
                 else {
@@ -524,7 +520,7 @@ local_session_host :: proc(args:[]string)->int {
                     if !control_request&&requested_kind!=.Attach {status=1}
                     else if !control_request&&client>=0 {status=2}
                     greeting:=make([dynamic]u8);history_put_u32(&greeting,LOCAL_SESSION_MAGIC);history_put_u32(&greeting,LOCAL_SESSION_VERSION);history_put_u32(&greeting,status);history_put_u32(&greeting,u32(p.pid))
-                    amount:=file_socket_send(next,raw_data(greeting[:]),c.size_t(len(greeting)),0x4000);delete(greeting)
+                    amount:=file_socket_send(next,raw_data(greeting[:]),c.size_t(len(greeting)),PLATFORM_MSG_NOSIGNAL);delete(greeting)
                     if amount!=16||status!=0||control_request {posix.close(next)}
                     else {client=next;ever_attached=true;clear(&incoming);clear(&outgoing);sent=0;t.dirty=true;last_state=time.Tick{};history_pending=false;input_blocked=false;discard_input=false}
                 }
@@ -532,7 +528,7 @@ local_session_host :: proc(args:[]string)->int {
         }
         if len(incoming)>PTY_INPUT_LIMIT+12 {if client>=0 {posix.close(client);client= -1}}
         if client>=0&&sent<len(outgoing)&&.OUT in descriptors[2].revents {
-            amount:=file_socket_send(client,raw_data(outgoing[sent:]),c.size_t(min(len(outgoing)-sent,1024*1024)),0x4000)
+            amount:=file_socket_send(client,raw_data(outgoing[sent:]),c.size_t(min(len(outgoing)-sent,1024*1024)),PLATFORM_MSG_NOSIGNAL)
             if amount>0 {sent+=int(amount)}
             else if amount<0&&posix.errno()!=.EAGAIN&&posix.errno()!=.EINTR {posix.close(client);client= -1}
         }

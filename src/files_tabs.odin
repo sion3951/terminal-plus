@@ -38,7 +38,9 @@ app_new_files_tab :: proc(a:^App,profile:Device_Profile,remote:bool,source_id,pa
 
 document_open_tab :: proc(a:^App,source:^Tab,path:string)->bool {
     source_id:=source.session_id;if source.files {source_id=source.source_id}
-    index:=app_new_files_tab(a,source.device,source.remote,source_id,filepath.dir(path))
+    directory:=source.restore_path
+    if !native_http_url(path) {directory=filepath.dir(path)}
+    index:=app_new_files_tab(a,source.device,source.remote,source_id,directory)
     if index<0 {
         if source.files {explorer_set_error(&source.explorer,"Close a tab before opening a document.")}
         else {delete(source.input_error);source.input_error=strings.clone("Close a tab before opening a document.")}

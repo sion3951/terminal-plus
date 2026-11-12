@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "base:runtime"
@@ -178,7 +178,7 @@ document_source_server :: proc(worker:^thread.Thread) {
     source:=cast(^Document_Source)worker.data
     for !sync.atomic_load(&source.stopping) {
         fds:=[1]posix.pollfd{{fd=posix.FD(source.listener),events={.IN}}}
-        if posix.poll(raw_data(fds[:]),1,100)<=0 {continue}
+        if platform_poll(raw_data(fds[:]),1,100)<=0 {continue}
         client,_,error:=net.accept_tcp(source.listener)
         if error!=nil {continue}
         net.set_blocking(client,false)
@@ -191,14 +191,14 @@ document_source_server :: proc(worker:^thread.Thread) {
 document_http_poll :: proc(http:^Document_HTTP,writing:bool)->bool {
     if sync.atomic_load(&http.source.stopping)||time.duration_seconds(time.tick_diff(http.progress,time.tick_now()))>20 {return false}
     fds:=[1]posix.pollfd{{fd=http.fd,events={.IN}}};if writing {fds[0].events={.OUT}}
-    ret:=posix.poll(raw_data(fds[:]),1,100)
+    ret:=platform_poll(raw_data(fds[:]),1,100)
     return ret>=0||posix.errno()==.EINTR
 }
 document_http_write :: proc(http:^Document_HTTP,bytes:[]u8)->bool {
     offset:=0
     for offset<len(bytes) {
         if sync.atomic_load(&http.source.stopping) {return false}
-        count:=file_socket_send(http.fd,&bytes[offset],c.size_t(int(len(bytes))-offset),0x4000)
+        count:=file_socket_send(http.fd,&bytes[offset],c.size_t(int(len(bytes))-offset),PLATFORM_MSG_NOSIGNAL)
         if count>0 {offset+=int(count);http.progress=time.tick_now()}
         else if count<0&&posix.errno()==.EAGAIN {if !document_http_poll(http,true) {return false}}
         else if count<0&&posix.errno()==.EINTR {continue}

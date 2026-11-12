@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:fmt"
@@ -12,14 +12,6 @@ import posix "core:sys/posix"
 // Use the platform's POSIX extended regular expressions, as Bash does.
 // The native shell already targets Linux's GNU libc interfaces (fnmatch with
 // FNM_EXTMATCH); this is the GNU regex_t ABI, including its final bitfield.
-Native_Shell_Regex :: struct {
-    buffer:rawptr,
-    allocated,used,syntax:c.ulong,
-    fastmap,translate:rawptr,
-    nsub:c.size_t,
-    flags:c.uint,
-}
-Native_Shell_Regex_Match :: struct {first,last:c.int}
 foreign import native_shell_regex_lib "system:c"
 foreign native_shell_regex_lib {
     @(link_name="regcomp") native_shell_regcomp :: proc(compiled:^Native_Shell_Regex,pattern:cstring,flags:c.int)->c.int ---
@@ -36,7 +28,7 @@ native_shell_capture_current :: proc(shell:^Native_Shell,source:string,reply:boo
     if !reply {
         saved_stdout=posix.FD(posix.fcntl(1,.DUPFD_CLOEXEC,c.int(10)))
         if saved_stdout<0&&posix.errno()!=.EBADF {return "","cannot save substitution output descriptor"}
-        capture_fd=native_shell_memfd_create("terminal-shell-current-substitution",1)
+        capture_fd=platform_memfd("terminal-shell-current-substitution")
         if capture_fd<0 {if saved_stdout>=0 {posix.close(saved_stdout)};return "","cannot create current-environment substitution output"}
         if posix.dup2(capture_fd,1)<0 {if saved_stdout>=0 {posix.close(saved_stdout)};posix.close(capture_fd);return "","cannot redirect substitution output"}
     }
@@ -128,8 +120,8 @@ native_shell_loop_finished :: proc(shell:^Native_Shell)->(stop,again:bool) {
 native_shell_case_match :: proc(shell:^Native_Shell,text,pattern:string,extended:bool=false)->bool {
     previous_locale:=native_shell_text_locale(shell);defer native_shell_text_locale_restore(previous_locale)
     flags:=0
-    if extended||shell.compat.shopts["extglob"] {flags+=32} // FNM_EXTMATCH
-    if shell.compat.shopts["nocasematch"] {flags+=16} // FNM_CASEFOLD
+    if extended||shell.compat.shopts["extglob"] {flags|=PLATFORM_FNM_EXTMATCH}
+    if shell.compat.shopts["nocasematch"] {flags|=PLATFORM_FNM_CASEFOLD}
     return posix.fnmatch(strings.clone_to_cstring(pattern),strings.clone_to_cstring(text),transmute(posix.FNM_Flags)i32(flags))==0
 }
 

@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -387,13 +387,8 @@ native_shell_protect_tty :: proc(shell:^Native_Shell,redirects:[]Native_Shell_Pr
     }
 }
 
-foreign import native_shell_exec_lib "system:c"
-foreign native_shell_exec_lib {
-    @(link_name="memfd_create") native_shell_memfd_create :: proc(name:cstring,flags:c.uint)->posix.FD ---
-}
-
 native_shell_here_fd :: proc(body:string)->posix.FD {
-    fd:=native_shell_memfd_create("terminal-shell-input",1)
+    fd:=platform_memfd("terminal-shell-input")
     if fd<0 {return -1}
     bytes:=transmute([]u8)body
     for len(bytes)>0 {
@@ -1717,7 +1712,7 @@ native_shell_capture :: proc(shell:^Native_Shell,source:string)->(string,string)
         // A signal may arrive after the cancellation check. Poll with a
         // bounded timeout so that race cannot leave the shell blocked in read.
         ready:=posix.pollfd{fd=output[0],events={.IN}}
-        polled:=posix.poll(&ready,1,50)
+        polled:=platform_poll(&ready,1,50)
         if polled==0 {continue}
         if polled<0 {if posix.errno()==.EINTR {continue};break}
         amount:=posix.read(output[0],raw_data(buffer[:]),len(buffer))
@@ -1739,7 +1734,7 @@ native_shell_capture :: proc(shell:^Native_Shell,source:string)->(string,string)
             if result<0 {break}
             // A bounded poll also covers a signal delivered between checking
             // the atomic flag and entering the wait syscall.
-            _=posix.poll(nil,0,50)
+            _=platform_poll(nil,0,50)
         }
     }
     // The child can close stdout before it exits. Cancellation while waiting

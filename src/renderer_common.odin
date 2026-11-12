@@ -182,7 +182,7 @@ renderer_font_pack :: proc(atlas:^Font_Atlas,width,height:int)->(x,y:int,ok:bool
     if width+2>=ATLAS_SIZE {return 0,0,false}
     if atlas.x+width+1>=ATLAS_SIZE {atlas.x=1;atlas.y+=atlas.row_height+2;atlas.row_height=0}
     if atlas.y+height+2>ATLAS_HEIGHT {atlas.reset_pending=true;return 0,0,false}
-    when ODIN_OS==.Linux {
+    when ODIN_OS==.Linux||ODIN_OS==.Darwin {
         // Coordinates retain the maximum-height basis throughout a frame.
         // Only the occupied rows need CPU storage or a GPU texture backing.
         rows:=max(128,len(atlas.pixels)/ATLAS_SIZE)
@@ -199,7 +199,7 @@ renderer_font_prepare :: proc(atlas:^Font_Atlas) {
     atlas.unicode_y=atlas.y+atlas.row_height+2
     atlas.x=1;atlas.y=atlas.unicode_y;atlas.row_height=0
     atlas.height=ATLAS_HEIGHT
-    when ODIN_OS!=.Linux {resize(&atlas.pixels,ATLAS_SIZE*ATLAS_HEIGHT)}
+    when ODIN_OS!=.Linux&&ODIN_OS!=.Darwin {resize(&atlas.pixels,ATLAS_SIZE*ATLAS_HEIGHT)}
     atlas.unicode=make(map[u64]Font_Glyph)
 }
 // Eviction happens only before a new frame, never underneath its vertices.
@@ -207,7 +207,7 @@ renderer_font_begin :: proc(r:^Renderer) {
     if !r.atlas.reset_pending {return}
     clear(&r.atlas.unicode)
     start:=r.atlas.unicode_y*ATLAS_SIZE
-    when ODIN_OS==.Linux {
+    when ODIN_OS==.Linux||ODIN_OS==.Darwin {
         rows:=128
         // A completely packed ASCII section can leave unicode_y at the last
         // atlas row. Cap the target as well as growth to avoid looping forever.

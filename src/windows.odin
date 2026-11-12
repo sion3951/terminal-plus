@@ -126,6 +126,8 @@ app_dispose_tab :: proc(tab:^Tab) {
 workspace_destroy_window :: proc(a:^App) {
     tab_drag_cancel()
     for tab in a.tabs {app_dispose_tab(tab)}
+    selection_clear_rows(a)
+    if a.link_cursor!=nil {glfw.SetCursor(a.renderer.window,nil);glfw.DestroyCursor(a.link_cursor);a.link_cursor=nil}
     delete(a.tabs);delete(a.vertices);delete(a.window_title);delete(a.session_error_seen);delete(a.group_menus)
     for profile in a.profiles {delete(profile.name);delete(profile.target)}
     delete(a.profiles)
@@ -227,6 +229,7 @@ workspace_step_window :: proc(a:^App,elapsed:f64,hold_local:bool)->f64 {
     old_cols,old_rows,old_size:=a.cols,a.rows,a.font_size
     app_metrics(a)
     if old_cols!=a.cols||old_rows!=a.rows||old_size!=a.font_size {a.dirty=true}
+    selection_scrolling:=selection_autoscroll(a)
     app_process_input(a)
     app_process_output(a,hold_local,0.006/f64(max(1,len(workspace_windows))))
     tab:=active_tab(a);if tab==nil {return 0.001}
@@ -258,6 +261,7 @@ workspace_step_window :: proc(a:^App,elapsed:f64,hold_local:bool)->f64 {
         }
     }
     wait:=min(explorer_search_delay(a),a.input_delay,renderer_frame_wait_delay(r,tab.media!=nil),document_view_wait_delay(a),media_wait_delay(a))
+    if selection_scrolling {wait=min(wait,0.03)}
     if animate {wait=min(wait,max(0.001,0.6-time.duration_seconds(time.tick_diff(a.blink_tick,time.tick_now()))))}
     if a.output_work {wait=min(wait,0.001)}
     if a.capture!="" {wait=min(wait,max(0.001,a.capture_after-elapsed))}

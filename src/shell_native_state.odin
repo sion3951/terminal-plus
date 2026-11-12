@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:fmt"
@@ -119,7 +119,7 @@ native_shell_compat_init :: proc(shell:^Native_Shell) {
     for name in ([]string{"patsub_replacement","globskipdots","extquote","sourcepath","progcomp","checkwinsize","cmdhist","complete_fullquote","force_fignore","globasciiranges","hostcomplete","interactive_comments"}) {state.shopts[name]=true}
     state.random=(u64(posix.getpid())*2862933555777941757)%2147483647;state.started=time.tick_now();state.started_wall=posix.time(nil);state.seconds_reset=state.started;state.random_special=true;state.seconds_special=true;state.srandom_special=true
     version:=native_shell_array_ensure(shell,"BASH_VERSINFO")
-    for value,index in ([]string{"5","3","20","1","release","x86_64-pc-linux-gnu"}) {version.indexed[index]=strings.clone(value,shell.allocator)}
+    for value,index in ([]string{"5","3","20","1","release",PLATFORM_MACHTYPE}) {version.indexed[index]=strings.clone(value,shell.allocator)}
     native_shell_attribute_set(shell,"BASH_VERSINFO",NATIVE_SHELL_INDEXED|NATIVE_SHELL_READONLY)
     native_shell_attribute_set(shell,"BASHOPTS",NATIVE_SHELL_READONLY);native_shell_attribute_set(shell,"SHELLOPTS",NATIVE_SHELL_READONLY)
     native_shell_attribute_set(shell,"RANDOM",NATIVE_SHELL_INTEGER);native_shell_attribute_set(shell,"SECONDS",NATIVE_SHELL_INTEGER);native_shell_attribute_set(shell,"SRANDOM",NATIVE_SHELL_INTEGER)

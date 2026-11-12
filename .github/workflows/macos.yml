@@ -1,0 +1,83 @@
+name: macOS app
+# Builds Terminal+.app and its disk image on Apple silicon. Run it manually for
+# a test build (Actions tab > macOS app > Run workflow); the release workflow
+# calls it for tagged releases.
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to build, e.g. v0.1.6'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  dmg:
+    runs-on: macos-14
+    env:
+      # Optional Developer ID signing and notarization. Without these secrets
+      # the app is ad-hoc signed and Gatekeeper asks once before first launch.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Install Homebrew libraries
+        run: sh scripts/ci/setup-macos.sh
+      - name: Install pinned Odin compiler
+        run: sh scripts/ci/setup-odin.sh
+      - name: Resolve version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          if [ -n "$TAG" ]; then version=${TAG#v}; else version=$(cat VERSION); fi
+          printf '%s\n' "$version" | grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?' || { echo "Invalid version $version" >&2; exit 1; }
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build
+        run: make -j"$(sysctl -n hw.ncpu)" VERSION="$RELEASE_VERSION"
+      - name: Self-check native shell, sessions and document engine
+        run: |
+          ./build/terminal --self-check
+          ./build/terminal --persistence-check
+          ./build/terminal --document-check examples/html/*.html
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != '' && env.MACOS_SIGN_IDENTITY != ''
+        run: |
+          set -eu
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          certificate="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$certificate"
+          echo "CODESIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+      - name: Package app and disk image
+        run: make dmg VERSION="$RELEASE_VERSION"
+      - name: Verify packaged app
+        run: |
+          set -eu
+          app="build/packages/Terminal+.app/Contents/MacOS/terminal+"
+          test "$("$app" --version)" = "Terminal+ $RELEASE_VERSION"
+          "$app" --self-check
+          codesign --verify --strict --deep "build/packages/Terminal+.app"
+          # Only the OS and the app's own Frameworks may be referenced.
+          for binary in "$app" build/packages/Terminal+.app/Contents/Frameworks/*.dylib; do
+            otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/|@rpath/)' && { echo "$binary has an unbundled dependency" >&2; exit 1; } || true
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-dmg
+          path: build/packages/terminal+-*-arm64.dmg
+          if-no-files-found: error

@@ -117,7 +117,11 @@ tab_drag_motion :: proc(a:^App,px,py:f64,start_transfer:bool=true)->bool {
     sx,sy:=px,py
     occupied:=tab_drag.source
     if a!=tab_drag.source {return true}
-    if tab_drag_outside(a,px,py) {occupied=nil}
+    if tab_drag_outside(a,px,py) {
+        occupied=nil
+        // Platforms with global window positions target sibling windows directly.
+        if target,tx,ty,found:=tab_drag_window_at(a,px,py);found {occupied=target;sx,sy=tx,ty}
+    }
     dx,dy:=sx-tab_drag.press_x,sy-tab_drag.press_y
     if !tab_drag.dragging&&dx*dx+dy*dy>=36 {a.last_tab_click=nil;tab_drag.dragging=true;tab_drag_mark()}
     if !tab_drag.dragging {return true}
@@ -143,8 +147,9 @@ tab_drag_release :: proc(a:^App,px,py:f64)->bool {
     if drag.target!=nil {
         workspace_request_drop(drag.source,drag.tab,drag.target,drag.insertion,drag.drop_mode,drag.onto,drag.group_id,drag.to_group,drag.onto_group)
     } else if a==drag.source&&tab_drag_outside(a,px,py) {
-        // Without Wayland drag-and-drop, a release outside the window detaches.
-        workspace_request_detach(drag.source,drag.tab,drag.group_id)
+        // Without Wayland drag-and-drop, a release outside every window
+        // detaches; one over another window's content leaves the tab in place.
+        if _,_,_,over:=tab_drag_window_at(a,px,py);!over {workspace_request_detach(drag.source,drag.tab,drag.group_id)}
     }
     return true
 }

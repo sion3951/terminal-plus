@@ -1,4 +1,4 @@
-name: Release AppImage
+name: Release
 on:
   push:
     tags: ['v[0-9]*']
@@ -13,7 +13,15 @@ concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
+  macos:
+    uses: ./.github/workflows/macos.yml
+    with:
+      tag: ${{ github.event.inputs.tag || github.ref_name }}
+    secrets: inherit
   appimage:
+    # The experimental macOS build must never block the Linux release.
+    needs: macos
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -42,6 +50,12 @@ jobs:
           make -j"$(nproc)" VERSION="$RELEASE_VERSION" GLSLC="glslangValidator -V"
           sh scripts/build-appimage.sh --version "$RELEASE_VERSION"
           APPIMAGE_EXTRACT_AND_RUN=1 "build/packages/terminal+-$RELEASE_VERSION-x86_64.AppImage" --version
+      - name: Fetch macOS disk image
+        if: needs.macos.result == 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-dmg
+          path: build/packages
       - name: Sign update metadata
         env:
           UPDATE_PRIVATE_KEY: ${{ secrets.TERMINAL_PLUS_UPDATE_PRIVATE_KEY }}
@@ -53,7 +67,7 @@ jobs:
           test -n "$UPDATE_PRIVATE_KEY" || { echo 'Set TERMINAL_PLUS_UPDATE_PRIVATE_KEY before publishing.' >&2; exit 1; }
           printf '%s\n' "$UPDATE_PRIVATE_KEY" > "$key"
           python3 scripts/update-manifest.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --packages build/packages --private-key "$key"
-          (cd build/packages && sha256sum *.AppImage update.json update.json.sig > SHA256SUMS)
+          (cd build/packages && sha256sum *.AppImage $(ls *.dmg 2>/dev/null) update.json update.json.sig > SHA256SUMS)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,6 +78,19 @@ jobs:
           fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true || { echo 'Never overwrite an already published release.' >&2; exit 1; }
           gh release upload "$RELEASE_TAG" build/packages/* --clobber
+          if ls build/packages/*.dmg >/dev/null 2>&1; then
+            if gh release view "$RELEASE_TAG" --json body --jq .body | grep -q 'macOS (Apple silicon) is experimental'; then :; else
+            note=$(mktemp)
+            {
+              printf '%s\n\n' '> **macOS (Apple silicon) is experimental.** `terminal+-'"$RELEASE_VERSION"'-arm64.dmg` is new and lightly tested: open it, drag Terminal+ to Applications, then approve it once in System Settings → Privacy & Security if macOS blocks it. Please report problems.'
+              gh release view "$RELEASE_TAG" --json body --jq .body
+            } > "$note"
+            gh release edit "$RELEASE_TAG" --notes-file "$note"
+            rm -f "$note"
+            fi
+          else
+            echo '::warning::The experimental macOS build failed; releasing Linux only.'
+          fi
           case "$RELEASE_VERSION" in
             *-*) gh release edit "$RELEASE_TAG" --prerelease --draft=false ;;
             *) gh release edit "$RELEASE_TAG" --draft=false --latest ;;

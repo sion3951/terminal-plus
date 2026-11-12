@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -98,18 +98,11 @@ native_shell_parameter_list :: proc(values:[]string,star:bool=false)->Native_She
     return result
 }
 
-Native_Shell_Glob :: struct {
-    pathc:c.size_t,pathv:^cstring,offs:c.size_t,flags:c.int,
-    closedir,readdir,opendir,lstat,stat:rawptr,
-}
-Native_Shell_Passwd :: struct {name,password:cstring,uid,gid:c.uint,gecos,directory,shell:cstring}
 foreign import native_shell_glob_lib "system:c"
 foreign native_shell_glob_lib {
     @(link_name="glob") native_shell_glob :: proc(pattern:cstring,flags:c.int,error:rawptr,result:^Native_Shell_Glob)->c.int ---
     @(link_name="globfree") native_shell_glob_free :: proc(result:^Native_Shell_Glob) ---
     @(link_name="fnmatch") native_shell_fnmatch :: proc(pattern,value:cstring,flags:c.int)->c.int ---
-    @(link_name="getpwnam") native_shell_getpwnam :: proc(name:cstring)->^Native_Shell_Passwd ---
-    @(link_name="getpwuid") native_shell_getpwuid :: proc(uid:c.uint)->^Native_Shell_Passwd ---
 }
 
 native_shell_arithmetic_end :: proc(source:string,start:int)->(int,string) {
@@ -207,8 +200,8 @@ native_shell_pattern_matches :: proc(shell:^Native_Shell,pattern,value:string)->
     flags:c.int
     if shell.compat!=nil {
         if shell.compat.shopts["globasciiranges"] {_=libc.setlocale(.COLLATE,"C")} 
-        if shell.compat.shopts["extglob"] {flags|=32}
-        if shell.compat.shopts["nocasematch"] {flags|=16}
+        if shell.compat.shopts["extglob"] {flags|=PLATFORM_FNM_EXTMATCH}
+        if shell.compat.shopts["nocasematch"] {flags|=PLATFORM_FNM_CASEFOLD}
     }
     return native_shell_fnmatch(strings.clone_to_cstring(pattern),strings.clone_to_cstring(value),flags)==0
 }
@@ -739,7 +732,7 @@ native_shell_expand_fields :: proc(shell:^Native_Shell,raw:string,split:bool,dep
             user:=raw[i+1:end];home:="";resolved:=false
             if user=="" {
                 home,resolved=native_shell_variable(shell,"HOME")
-                if !resolved {entry:=native_shell_getpwuid(c.uint(posix.getuid()));if entry!=nil {home=string(entry.directory);resolved=true}}
+                if !resolved {entry:=posix.getpwuid(posix.getuid());if entry!=nil {home=string(entry.pw_dir);resolved=true}}
             } else if user=="+" {home,resolved=native_shell_variable(shell,"PWD")}
             else if user=="-" {home,resolved=native_shell_variable(shell,"OLDPWD")}
             else {
@@ -752,7 +745,7 @@ native_shell_expand_fields :: proc(shell:^Native_Shell,raw:string,split:bool,dep
                         if reverse {index=len(stack)-1-index}
                         if index>=0&&index<len(stack) {home=stack[index];resolved=true}
                     }
-                } else {entry:=native_shell_getpwnam(strings.clone_to_cstring(user));if entry!=nil {home=string(entry.directory);resolved=true}}
+                } else {entry:=posix.getpwnam(strings.clone_to_cstring(user));if entry!=nil {home=string(entry.pw_dir);resolved=true}}
             }
             if resolved {native_shell_expansion_text(&expansion,home,true,false);i=end;continue}
         }
@@ -883,8 +876,8 @@ native_shell_filename_matches :: proc(shell:^Native_Shell,pattern,value:string)-
     defer {if previous!="" {_=libc.setlocale(.COLLATE,strings.clone_to_cstring(previous))};delete(previous)}
     if shell.compat.shopts["globasciiranges"] {_=libc.setlocale(.COLLATE,"C")}
     flags:c.int
-    if shell.compat.shopts["extglob"] {flags|=32}
-    if shell.compat.shopts["nocaseglob"] {flags|=16}
+    if shell.compat.shopts["extglob"] {flags|=PLATFORM_FNM_EXTMATCH}
+    if shell.compat.shopts["nocaseglob"] {flags|=PLATFORM_FNM_CASEFOLD}
     return native_shell_fnmatch(strings.clone_to_cstring(pattern),strings.clone_to_cstring(value),flags)==0
 }
 native_shell_dotglob :: proc(shell:^Native_Shell)->bool {return shell.compat.shopts["dotglob"]}
@@ -970,7 +963,7 @@ native_shell_expand :: proc(shell:^Native_Shell,word:Native_Shell_Word,split:boo
         for &field in split_fields {
             native_shell_field_pattern(shell,&field)
             if !glob||!field.glob||shell.compat.options["noglob"] {append(&result,string(field.bytes[:]));continue}
-            if shell.compat.shopts["globstar"]&&strings.contains(string(field.pattern[:]),"**")||shell.compat.shopts["extglob"]||shell.compat.shopts["nocaseglob"]||shell.compat.shopts["globasciiranges"]&&strings.contains(string(field.pattern[:]),"[") {
+            if shell.compat.shopts["globstar"]&&strings.contains(string(field.pattern[:]),"**")||shell.compat.shopts["extglob"]||shell.compat.shopts["nocaseglob"]||shell.compat.shopts["globasciiranges"]&&strings.contains(string(field.pattern[:]),"[")||PLATFORM_GLOB_PERIOD==0&&native_shell_dotglob(shell) {
                 paths,glob_error:=native_shell_globstar(shell,string(field.pattern[:]))
                 if glob_error!="" {return nil,glob_error}
                 before:=len(result)
@@ -980,8 +973,8 @@ native_shell_expand :: proc(shell:^Native_Shell,word:Native_Shell_Word,split:boo
                 if !shell.compat.shopts["nullglob"] {append(&result,string(field.bytes[:]))};continue
             }
             matches:Native_Shell_Glob
-            flags:c.int=4 // GLOB_NOSORT; GLOBSORT controls ordering below.
-            if native_shell_dotglob(shell) {flags|=128}
+            flags:c.int=PLATFORM_GLOB_NOSORT // GLOBSORT controls ordering below.
+            if native_shell_dotglob(shell) {flags|=PLATFORM_GLOB_PERIOD}
             code:=native_shell_glob(strings.clone_to_cstring(string(field.pattern[:])),flags,nil,&matches)
             if code==0 {
                 paths:=cast([^]cstring)matches.pathv
@@ -992,12 +985,12 @@ native_shell_expand :: proc(shell:^Native_Shell,word:Native_Shell_Word,split:boo
                     if shell.compat.shopts["failglob"] {native_shell_glob_free(&matches);return nil,native_shell_expansion_join("no match: ",string(field.bytes[:]))}
                     if !shell.compat.shopts["nullglob"] {append(&result,string(field.bytes[:]))}
                 }
-            } else if code==3 {
+            } else if code==PLATFORM_GLOB_NOMATCH {
                 if shell.compat.shopts["failglob"] {native_shell_glob_free(&matches);return nil,native_shell_expansion_join("no match: ",string(field.bytes[:]))}
                 if !shell.compat.shopts["nullglob"] {append(&result,string(field.bytes[:]))}
             }
             native_shell_glob_free(&matches)
-            if code!=0&&code!=3 {return nil,"Could not expand filename pattern."}
+            if code!=0&&code!=PLATFORM_GLOB_NOMATCH {return nil,"Could not expand filename pattern."}
         }
     }
     return result[:],""

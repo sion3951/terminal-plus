@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -30,7 +30,7 @@ lifecycle_worker :: proc(worker:^thread.Thread) {
     for {
         if atomic.atomic_load(&state.stopping) {break}
         descriptor:=posix.pollfd{fd=state.pipe[0],events={.IN}}
-        result:=posix.poll(&descriptor,1,-1)
+        result:=platform_poll(&descriptor,1,-1)
         if result<0 {if posix.errno()==.EINTR {continue};break}
         if .IN in descriptor.revents {
             received:=false

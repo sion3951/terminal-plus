@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -88,7 +88,7 @@ native_shell_init :: proc(shell:^Native_Shell,interactive:bool) {
         entry:=string(posix.environ[i]);equals:=strings.index_byte(entry,'=')
         if equals>0 {native_shell_set_variable(shell,entry[:equals],entry[equals+1:],true)}
     }
-    defaults:=[][2]string{{"OSTYPE","linux-gnu"},{"HOSTTYPE","x86_64"},{"MACHTYPE","x86_64-pc-linux-gnu"},{"OPTIND","1"},{"OPTERR","1"},{"MAILCHECK","60"},{"PS4","+ "}}
+    defaults:=[][2]string{{"OSTYPE",PLATFORM_OSTYPE},{"HOSTTYPE",PLATFORM_HOSTTYPE},{"MACHTYPE",PLATFORM_MACHTYPE},{"OPTIND","1"},{"OPTERR","1"},{"MAILCHECK","60"},{"PS4","+ "}}
     for pair in defaults {if _,exists:=shell.variables[pair[0]];!exists {native_shell_set_variable(shell,pair[0],pair[1])}}
     for name in ([]string{"UID","EUID","PPID","BASHPID","BASH_SUBSHELL","LINENO","EPOCHSECONDS","EPOCHREALTIME","BASH_MONOSECONDS","RANDOM","SECONDS","SRANDOM","SHELLOPTS","BASHOPTS"}) {
         if name=="SHELLOPTS"||name=="BASHOPTS" {if _,imported:=shell.variables[name];imported {continue}}

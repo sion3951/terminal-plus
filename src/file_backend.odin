@@ -1,4 +1,4 @@
-#+build linux
+#+build linux, darwin
 package main
 
 import "core:c"
@@ -43,18 +43,16 @@ FILE_PACKET_LIMIT :: 4*1024*1024
 file_runtime_directory:string
 foreign import file_lib "system:c"
 foreign file_lib {
-    @(link_name="socketpair") file_socketpair :: proc(domain,kind,protocol:c.int,fds:^[2]posix.FD)->c.int ---
     @(link_name="send") file_socket_send :: proc(fd:posix.FD,data:rawptr,length:c.size_t,flags:c.int)->c.ssize_t ---
     @(link_name="realpath") file_realpath :: proc(path:cstring,resolved:rawptr)->cstring ---
     @(link_name="free") file_cfree :: proc(data:rawptr) ---
-    @(link_name="chmod") file_chmod :: proc(path:cstring,mode:c.uint)->c.int ---
 }
 
 explorer_backend_init :: proc()->bool {
     if file_runtime_directory!="" {return true}
     path,error:=os.make_directory_temp("/tmp","minor-terminal-*",context.allocator)
     if error!=nil {return false}
-    if file_chmod(strings.clone_to_cstring(path,context.temp_allocator),0o700)!=0 {os.remove(path);delete(path);return false}
+    if posix.chmod(strings.clone_to_cstring(path,context.temp_allocator),{.IRUSR,.IWUSR,.IXUSR})!=.OK {os.remove(path);delete(path);return false}
     file_runtime_directory=path
     return true
 }
@@ -249,7 +247,7 @@ file_sftp_spawn :: proc(s:^File_SFTP,profile:Device_Profile)->bool {
     defer {for argument in args {if argument!=nil {delete(argument)}};delete(args)}
     for arg,i in arguments {args[i]=strings.clone_to_cstring(arg)}
     socket:[2]posix.FD
-    if file_socketpair(1,1|0x80000,0,&socket)!=0 {s.error="Cannot create SFTP channel.";return false}
+    if file_socketpair(1,1|PLATFORM_SOCK_CLOEXEC,0,&socket)!=0 {s.error="Cannot create SFTP channel.";return false}
     errors:[2]posix.FD
     if pty_pipe2(&errors,c.int(posix.O_CLOEXEC))!=0 {posix.close(socket[0]);posix.close(socket[1]);s.error="Cannot create SFTP error pipe.";return false}
     argv:=raw_data(args);env:=posix.environ
@@ -291,7 +289,7 @@ file_sftp_poll :: proc(s:^File_SFTP,writing:bool)->bool {
     if !file_sftp_check(s) {return false}
     fds:=[2]posix.pollfd{{fd=s.io,events={.IN}},{fd=s.stderr,events={.IN}}}
     if writing {fds[0].events={.OUT}}
-    result:=posix.poll(raw_data(fds[:]),2,100)
+    result:=platform_poll(raw_data(fds[:]),2,100)
     if result<0 {if posix.errno()==.EINTR {return true};s.error="SFTP channel polling failed.";return false}
     if .IN in fds[1].revents||.HUP in fds[1].revents {
         bytes:[1024]u8
@@ -306,7 +304,7 @@ file_sftp_write :: proc(s:^File_SFTP,data:[]u8)->bool {
     for offset<len(data) {
         if !file_sftp_check(s) {return false}
         remaining:=len(data)-offset
-        amount:=file_socket_send(s.io,&data[offset],c.size_t(remaining),0x4000) // MSG_NOSIGNAL
+        amount:=file_socket_send(s.io,&data[offset],c.size_t(remaining),PLATFORM_MSG_NOSIGNAL) // MSG_NOSIGNAL
         if amount>0 {offset+=int(amount);s.deadline=time.tick_now()}
         else if amount<0&&posix.errno()==.EAGAIN {if !file_sftp_poll(s,true) {return false}}
         else if amount<0&&posix.errno()==.EINTR {continue}

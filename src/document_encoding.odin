@@ -3,9 +3,14 @@ package main
 import "core:c"
 import "core:strings"
 
-// Character conversion uses libc already linked by the application. Parsing,
-// styling, scripts and rendering remain native; this adds no library dependency.
-foreign import document_encoding_lib "system:c"
+// Character conversion uses the system iconv: part of glibc on Linux and the
+// OS-provided libiconv on macOS. Parsing, styling, scripts and rendering remain
+// native; this adds no bundled library dependency.
+when ODIN_OS==.Darwin {
+    foreign import document_encoding_lib "system:iconv"
+} else {
+    foreign import document_encoding_lib "system:c"
+}
 foreign document_encoding_lib {
     @(link_name="iconv_open") html_iconv_open :: proc(to,from:cstring)->rawptr ---
     @(link_name="iconv") html_iconv :: proc(converter:rawptr,input:^[^]u8,input_left:^c.size_t,output:^[^]u8,output_left:^c.size_t)->c.size_t ---

@@ -90,6 +90,15 @@ App :: struct {
     dirty, focused, selecting, selected: bool,
     anchor, endpoint: [2]int,
     selection_last_row: int,
+    selection_rows: map[int][]Cell,
+    selection_tab: ^Tab,
+    selection_epoch: u64,
+    selection_alternate: bool,
+    selection_tick: time.Tick,
+    terminal_wheel: f64,
+    link_active, link_cursor_shown: bool,
+    link_lo, link_hi: int,
+    link_cursor: glfw.CursorHandle,
     font_index: int,
     scale, font_size, cell_w, cell_h, origin_x, origin_y: f32,
     cols, rows: int,
@@ -191,14 +200,14 @@ app_close_tab :: proc(a:^App,index:int) {
         }
     }
     if !tab.files&&tab.remote {
-        if tab.remote_end!=nil {return}
+        if tab.remote_end!=nil {app_finish_close_tab(a,index);return}
         // Failed authentication creates no remote session. A running attempt
         // may still connect; restored/previously connected tabs may own a
         // persistent server even after the SSH client has exited.
         if (tab.started&&!tab.exited)||tab.session_owned||tab.restore_path!="" {
             tab.remote_end=remote_session_end_start(tab.device)
             if tab.remote_end==nil {
-                delete(tab.input_error);tab.input_error=strings.clone("Could not start ending the remote session. The tab was kept open.")
+                app_finish_close_tab(a,index);return
             } else {
                 delete(tab.input_error);tab.input_error=strings.clone("Ending remote session…")
             }
@@ -259,22 +268,96 @@ app_paste :: proc(a:^App) {
         a.input_delay=0.001;tab.scroll=0;a.selected=false;a.dirty=true
     } else {app_send(a,bytes[:])}
 }
+selection_clear_rows :: proc(a:^App) {
+    for _,row in a.selection_rows {delete(row)}
+    delete(a.selection_rows);a.selection_rows=nil;a.selection_tab=nil
+}
+// Keep selected text in RAM so output and archive page eviction cannot change
+// what a drag copies. Row keys are absolute scrollback positions.
+selection_capture :: proc(a:^App) {
+    tab:=active_tab(a)
+    if !a.selected||tab==nil {
+        a.selecting=false
+        if a.selection_tab!=nil {selection_clear_rows(a)}
+        return
+    }
+    t:=&tab.terminal
+    if a.selection_tab!=tab||a.selection_epoch!=t.history_epoch||a.selection_alternate!=t.alternate {
+        a.selected=false;a.selecting=false;selection_clear_rows(a);return
+    }
+    terminal_history_prepare(t,tab.scroll)
+    base:=terminal_history_count(t)-tab.scroll
+    for y in 0..<t.rows {
+        key:=base+y
+        if _,exists:=a.selection_rows[key];exists {continue}
+        row:=terminal_row(t,y,tab.scroll)
+        if len(row)>0 {saved:=make([]Cell,len(row));copy(saved,row);a.selection_rows[key]=saved}
+    }
+}
 selection_bounds :: proc(a:^App)->(lo,hi:int) {
-    last:=max(0,min(a.rows-1,a.selection_last_row))*a.cols+a.cols-1
-    lo=clamp(a.anchor[1]*a.cols+a.anchor[0],0,last);hi=clamp(a.endpoint[1]*a.cols+a.endpoint[0],0,last)
+    lo=a.anchor[1]*a.cols+a.anchor[0];hi=a.endpoint[1]*a.cols+a.endpoint[0]
     if lo>hi {lo,hi=hi,lo}
     return
 }
+terminal_view_scroll :: proc(a:^App,delta:int) {
+    tab:=active_tab(a);if tab==nil {return}
+    selection_capture(a)
+    tab.scroll=clamp(tab.scroll+delta,0,terminal_history_count(&tab.terminal))
+    a.selection_last_row=terminal_selection_last_row(&tab.terminal,tab.scroll)
+    selection_capture(a)
+    if a.selecting {x,y:=glfw.GetCursorPos(a.renderer.window);a.endpoint=mouse_cell(a,x,y)}
+    terminal_link_refresh(a,terminal_link_ctrl_held(a))
+    a.dirty=true
+}
+selection_autoscroll :: proc(a:^App)->bool {
+    if !a.selected {a.selecting=false}
+    if !a.selecting {return false}
+    _,y:=glfw.GetCursorPos(a.renderer.window)
+    py:=f32(y)*a.scale
+    delta:=0
+    if py<a.origin_y {delta=1}
+    if py>=a.origin_y+f32(a.rows)*a.cell_h {delta= -1}
+    if delta==0 {return false}
+    // Do not outrun the asynchronous archive reader during a held edge drag.
+    selection_capture(a)
+    tab:=active_tab(a)
+    if !a.selecting||tab==nil {return false}
+    for row in 0..<a.rows {
+        if len(terminal_row(&tab.terminal,row,tab.scroll))==0 {return true}
+    }
+    now:=time.tick_now()
+    if time.duration_seconds(time.tick_diff(a.selection_tick,now))>=0.03 {
+        a.selection_tick=now;terminal_view_scroll(a,delta)
+    }
+    return true
+}
 app_copy :: proc(a:^App) {
     tab:=active_tab(a);if tab==nil||!a.selected {return}
+    selection_capture(a)
+    if !a.selected {return}
     lo,hi:=selection_bounds(a)
+    for y in lo/a.cols..=hi/a.cols {
+        if _,ready:=a.selection_rows[y];!ready {
+            // A fast wheel gesture may cross an archive page before it arrives.
+            // Recover those rows from the page cache rather than copying blanks.
+            offset:=terminal_history_count(&tab.terminal)-y
+            row:=terminal_row(&tab.terminal,0,offset)
+            if offset>0&&len(row)>0 {
+                saved:=make([]Cell,len(row));copy(saved,row);a.selection_rows[y]=saved
+            } else {
+                terminal_history_prepare(&tab.terminal,offset)
+                delete(tab.input_error);tab.input_error=strings.clone("Selected scrollback is still loading. Try copying again.");a.dirty=true;return
+            }
+        }
+    }
     bytes:=make([dynamic]u8);defer delete(bytes)
     for y in lo/a.cols..=hi/a.cols {
         start:=0;end:=a.cols-1
         if y==lo/a.cols {start=lo%a.cols};if y==hi/a.cols {end=hi%a.cols}
         last:=len(bytes)
         for x in start..=end {
-            cell:=terminal_cell(&tab.terminal,x,y,tab.scroll)
+            row:=a.selection_rows[y]
+            cell:=terminal_default_style();if x<len(row) {cell=row[x]}
             if cell.width==0 {continue}
             ch:=cell.ch;if ch==0 {ch=' '}
             encoded,n:=utf8.encode_rune(ch);append(&bytes,..encoded[:n])
@@ -291,7 +374,7 @@ tab_number_key :: proc(key:c.int)->int {
     if key>=glfw.KEY_KP_1&&key<=glfw.KEY_KP_9 {return int(key-glfw.KEY_KP_1)}
     return -1
 }
-key_callback :: proc "c" (w:glfw.WindowHandle,key,scan,action,mods:c.int) {
+key_callback :: proc "c" (w:glfw.WindowHandle,key,scan,action,raw_mods:c.int) {
     context=runtime.default_context()
     if action==glfw.RELEASE {
         if a:=app_from(w);a!=nil {
@@ -299,11 +382,14 @@ key_callback :: proc "c" (w:glfw.WindowHandle,key,scan,action,mods:c.int) {
         }
     }
     if action==glfw.RELEASE&&(key==glfw.KEY_LEFT_CONTROL||key==glfw.KEY_RIGHT_CONTROL) {
-        if a:=app_from(w);a!=nil {a.zoom_wheel=0}
+        if a:=app_from(w);a!=nil {a.zoom_wheel=0;terminal_link_refresh(a,terminal_link_ctrl_held(a))}
         return
     }
     if action!=glfw.PRESS&&action!=glfw.REPEAT {return}
+    mods,shortcut_ok:=platform_shortcut_mods(key,raw_mods)
+    if !shortcut_ok {return}
     a:=app_from(w)
+    if action==glfw.PRESS&&(key==glfw.KEY_LEFT_CONTROL||key==glfw.KEY_RIGHT_CONTROL) {terminal_link_refresh(a,true)}
     if media_view_key(a,key,mods,action) {return}
     if a.update_dialog {if action==glfw.PRESS&&key==glfw.KEY_ESCAPE {a.update_dialog=false;a.dirty=true};return}
     tab:=active_tab(a);if tab==nil {return}
@@ -393,14 +479,19 @@ char_callback :: proc "c" (w:glfw.WindowHandle,ch:rune) {
     if explorer_handle_char(a,ch) {return}
     tab:=active_tab(a)
     if tab==nil||(tab.remote&&(!tab.started||tab.exited)) {return}
-    if glfw.GetKey(w,glfw.KEY_LEFT_ALT)==glfw.PRESS||glfw.GetKey(w,glfw.KEY_RIGHT_ALT)==glfw.PRESS {app_send_text(a,"\x1b")}
+    // macOS Option composes characters (@, [, { on many layouts); never Meta-prefix them.
+    when ODIN_OS!=.Darwin {
+        if glfw.GetKey(w,glfw.KEY_LEFT_ALT)==glfw.PRESS||glfw.GetKey(w,glfw.KEY_RIGHT_ALT)==glfw.PRESS {app_send_text(a,"\x1b")}
+    }
     bytes,n:=utf8.encode_rune(ch);app_send(a,bytes[:n])
 }
 mouse_cell :: proc(a:^App,x,y:f64)->[2]int {
+    tab:=active_tab(a);if tab==nil {return {}}
+    base:=terminal_history_count(&tab.terminal)-tab.scroll
     row:=int((f32(y)*a.scale-a.origin_y)/a.cell_h)
     last:=clamp(a.selection_last_row,0,a.rows-1)
-    if row>last {return {a.cols-1,last}}
-    return {clamp(int((f32(x)*a.scale-a.origin_x)/a.cell_w),0,a.cols-1),clamp(row,0,last)}
+    if row>last {return {a.cols-1,last+base}}
+    return {clamp(int((f32(x)*a.scale-a.origin_x)/a.cell_w),0,a.cols-1),clamp(row,0,last)+base}
 }
 Tab_Bar_Layout :: struct {
     first, visible, count: int,
@@ -479,12 +570,20 @@ mouse_callback :: proc "c" (w:glfw.WindowHandle,button,action,mods:c.int) {
         return
     }
     tab:=active_tab(a);if tab==nil {return}
+    if mods&glfw.MOD_CONTROL!=0 {
+        if link,ok:=terminal_link_at(a,x,y);ok {terminal_link_refresh(a,false);terminal_link_open(a,link.url);return}
+    }
     a.selection_last_row=terminal_selection_last_row(&tab.terminal,tab.scroll)
     row:=int((f32(y)*a.scale-a.origin_y)/a.cell_h)
     if f32(y)*a.scale<a.origin_y||row>a.selection_last_row {
         a.selected=false;a.selecting=false;a.dirty=true;return
     }
+    selection_clear_rows(a)
+    a.selection_rows=make(map[int][]Cell);a.selection_tab=tab
+    a.selection_epoch=tab.terminal.history_epoch;a.selection_alternate=tab.terminal.alternate
+    a.selection_tick=time.tick_now()
     a.anchor=mouse_cell(a,x,y);a.endpoint=a.anchor;a.selected=true;a.selecting=true;a.dirty=true
+    selection_capture(a)
 }
 app_hover_key :: proc(a:^App,x,y:f32)->u64 {
     if update_instance!=nil {
@@ -527,7 +626,8 @@ cursor_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
     if y<0||y>=HEADER {a.tab_wheel=0}
     hover:=app_hover_key(a,f32(x),f32(y))
     if hover!=a.hover_key {a.hover_key=hover;a.dirty=true}
-    if a.picker.open||a.menu.open {return}
+    if a.picker.open||a.menu.open {terminal_link_hover(a,x,y,false);return}
+    terminal_link_hover(a,x,y,terminal_link_ctrl_held(a))
     if explorer_handle_cursor(a,f32(x),f32(y)) {return}
     if a.selecting {
         endpoint:=mouse_cell(a,x,y)
@@ -568,12 +668,14 @@ scroll_callback :: proc "c" (w:glfw.WindowHandle,x,y:f64) {
     }
     a.tab_wheel=0
     if explorer_handle_scroll(a,int(math.round(y))) {return}
-    tab.scroll=clamp(tab.scroll+int(math.round(y*3)),0,terminal_history_count(&tab.terminal));a.selected=false;a.dirty=true
+    a.terminal_wheel+=y*3
+    steps:=int(a.terminal_wheel)
+    if steps!=0 {a.terminal_wheel-=f64(steps);terminal_view_scroll(a,steps)}
 }
 refresh_callback :: proc "c" (w:glfw.WindowHandle) {context=runtime.default_context();app_from(w).dirty=true}
 focus_callback :: proc "c" (w:glfw.WindowHandle,focused:c.int) {
     context=runtime.default_context();a:=app_from(w);a.focused=focused!=0;a.dirty=true
-    if !a.focused {tab_rename_finish(a,true);a.menu.open=false;tab_group_close(a)}
+    if !a.focused {a.selecting=false;terminal_link_refresh(a,false);tab_rename_finish(a,true);a.menu.open=false;tab_group_close(a)}
     if a.focused {workspace_focused=a;if workspace_save_allowed {session_touch(a)}}
 }
 
@@ -666,6 +768,7 @@ app_render_terminal :: proc(a:^App) {
     // Document font sizes can grow without changing terminal table offsets.
     fonts: [Font_Kind]^Font_Size
     for kind in Font_Kind {fonts[kind]=renderer_font_size(r,a.font_size,kind)}
+    selection_capture(a)
     lo,hi:=selection_bounds(a)
     t:=&tab.terminal
     terminal_history_prepare(t,tab.scroll)
@@ -677,12 +780,19 @@ app_render_terminal :: proc(a:^App) {
             cell:=blank
             if x<len(row) {cell=row[x]}
             px:=a.origin_x+f32(x)*a.cell_w
+            position:=(terminal_history_count(t)-tab.scroll+y)*a.cols+x
+            highlighted:=a.selected&&position>=lo&&position<=hi
+            if highlighted {
+                saved:=a.selection_rows[terminal_history_count(t)-tab.scroll+y]
+                if x<len(saved) {cell=saved[x]}
+            }
             fg,bg:=rgb(cell.fg),rgb(cell.bg)
             // Saved scrollback retains the previous theme's default colors.
             if cell.bg==0x0b0d12||cell.bg==0x000000 {bg=BG}
             if cell.fg==0xd7dce5||cell.fg==0xededed||cell.fg==0x9b9b9b {fg=rgb(TERMINAL_FG)}
             if cell.inverse {fg,bg=bg,fg}
-            if a.selected&&y*a.cols+x>=lo&&y*a.cols+x<=hi {bg=SELECTION}
+            if highlighted {bg=SELECTION}
+            if a.link_active&&position>=a.link_lo&&position<=a.link_hi {cell.underline=true}
             if bg!=BG {renderer_rect(&a.vertices,px,py,a.cell_w,a.cell_h,bg)}
             if cell.width==0 {continue}
             ch:=cell.ch
@@ -747,6 +857,7 @@ app_render_terminal :: proc(a:^App) {
 }
 
 main :: proc() {
+    platform_prepare_environment()
     args:=os.args
     if len(args)>1&&args[1]=="--native-shell" {os.exit(native_shell_main(args[2:]))}
     if len(args)>1&&native_shell_cli_flag(args[1]) {os.exit(native_shell_main(args[1:]))}
@@ -777,7 +888,8 @@ main :: proc() {
     for i:=1;i<len(args);i+=1 {
         switch args[i] {
         case "--help","-h":
-            fmt.println("Terminal+ — Odin + Vulkan + GLFW\nUsage: terminal+ [-e 'shell command'] [--ssh user@host[:port]] [--startup-profile]\n       terminal+ --self-check\n       terminal+ --capture image.png [--capture-after seconds] [--exit-after seconds]\n\n+ menu: files, new terminals/windows, remote machines. Ctrl+Shift+T: SSH picker. Ctrl+Shift+W: close device.\nCtrl+Tab: next device. Ctrl+1…9 / Alt+1…9: select device. Enter: reconnect SSH.\nDrag tabs to reorder or move between windows. Ctrl+Shift+N: new window.\nMouse wheel over the top bar: previous/next device.\n+ menu > Files / Ctrl+B: toggle explorer. Ctrl+Shift+E: focus. Ctrl+Shift+F: search files.\nExplorer: Ctrl+L path, Ctrl+F search, Ctrl+H hidden, F5 refresh, Enter open.\nCtrl+Shift+C/V: copy/paste. Shift+PageUp/Down: history. Ctrl+Shift+Home/End: first/last.\nCtrl+Left/Right: word movement. Ctrl+Backspace/Delete: delete words.\nclear / Ctrl+Shift+K: clear history. Ctrl+wheel or Ctrl +/-/0: font size. Tabs and scrollback restore on restart.")
+            fmt.printf("Terminal+ — Odin + %s + GLFW\n",renderer_backend_name())
+            fmt.println("Usage: terminal+ [-e 'shell command'] [--ssh user@host[:port]] [--startup-profile]\n       terminal+ --self-check\n       terminal+ --capture image.png [--capture-after seconds] [--exit-after seconds]\n\n+ menu: files, new terminals/windows, remote machines. Ctrl+Shift+T: SSH picker. Ctrl+Shift+W: close device.\nCtrl+Tab: next device. Ctrl+1…9 / Alt+1…9: select device. Enter: reconnect SSH.\nDrag tabs to reorder or move between windows. Ctrl+Shift+N: new window.\nMouse wheel over the top bar: previous/next device.\n+ menu > Files / Ctrl+B: toggle explorer. Ctrl+Shift+E: focus. Ctrl+Shift+F: search files.\nExplorer: Ctrl+L path, Ctrl+F search, Ctrl+H hidden, F5 refresh, Enter open.\nCtrl+Shift+C/V: copy/paste. Shift+PageUp/Down: history. Ctrl+Shift+Home/End: first/last.\nCtrl+Left/Right: word movement. Ctrl+Backspace/Delete: delete words.\nclear / Ctrl+Shift+K: clear history. Ctrl+wheel or Ctrl +/-/0: font size. Tabs and scrollback restore on restart.")
             return
         case "--version":fmt.println("Terminal+",UPDATER_VERSION);return
         case "--check-updates":updater_cli_check();return
@@ -788,14 +900,18 @@ main :: proc() {
         case "--capture":if i+1<len(args) {i+=1;capture=args[i]}
         case "--exit-after":if i+1<len(args) {i+=1;exit_after,_=strconv.parse_f64(args[i])}
         case "--capture-after":if i+1<len(args) {i+=1;capture_after,_=strconv.parse_f64(args[i])}
-        case:fmt.eprintf("Unknown argument: %s\n",args[i]);os.exit(1)
+        case:
+            // Older Finder releases pass a process serial number to bundles.
+            if ODIN_OS==.Darwin&&strings.has_prefix(args[i],"-psn_") {continue}
+            fmt.eprintf("Unknown argument: %s\n",args[i]);os.exit(1)
         }
     }
     if ssh_target!="" {_,_,error:=device_target_parse(ssh_target);if error!="" {fmt.eprintln(error);os.exit(1)}}
     if self_check {
-        if terminal_selfcheck()&&pty_selfcheck() {fmt.println("Terminal parser and native shell PTY: OK");return}
+        if terminal_selfcheck()&&terminal_link_selfcheck()&&pty_selfcheck() {fmt.println("Terminal parser and native shell PTY: OK");return}
         fmt.eprintln("Self-check failed");os.exit(1)
     }
+    platform_prepare_gui()
     instance:=app_instance_init(command,ssh_target)
     if instance==.Forwarded {return}
     if instance==.Failed {fmt.eprintln(session_status_error());return}
