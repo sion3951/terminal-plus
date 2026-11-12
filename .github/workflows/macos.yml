@@ -44,6 +44,8 @@ jobs:
         run: make -j"$(sysctl -n hw.ncpu)" VERSION="$RELEASE_VERSION"
       - name: Self-check native shell, sessions and document engine
         run: |
+          # FFmpeg stays a runtime dependency; fixtures decode images with it.
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
           ./build/terminal --self-check
           ./build/terminal --persistence-check
           ./build/terminal --document-check examples/html/*.html
